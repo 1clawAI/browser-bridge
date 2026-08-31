@@ -45,7 +45,13 @@ jobs:
 
       # This repository goes public. A credential in history is not removed by
       # deleting it in HEAD, so the whole history is scanned, not the tree.
+      #
+      # The binary, not gitleaks-action@v2 — that action requires a paid
+      # organisation licence and fails closed without one, which would leave
+      # this job permanently red and eventually ignored.
       - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=8.21.2
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact --verbose --exit-code 1
