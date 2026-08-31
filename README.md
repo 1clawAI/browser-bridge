@@ -53,6 +53,7 @@ packages/browser-bridge
   pipe-transport.ts CDP over --remote-debugging-pipe (never a port)
   pipe-codec.ts     NUL-delimited framing, buffered across chunks
   proxy-server.ts   the socket a framework points cdp_url at
+  mcp-tools.ts      the status-only tool surface an agent calls
   loopback.ts       who may reach the local listeners
   drivers/saas.ts   1Claw-hosted backend
 ```
@@ -86,6 +87,21 @@ it. Any request carrying an `Origin` is refused — not just cross-site ones,
 because localhost-to-localhost is *same*-site and `Sec-Fetch-Site` would pass
 it. Plus a literal-loopback `Host` check for DNS rebinding, and a per-session
 token compared in constant time.
+
+### The agent's surface
+
+`request_fill` asks the bridge to type a credential. It does not return one —
+the agent learns whether the fill happened, never what was typed. There is
+deliberately no tool that returns credential material, because a tool that
+could would be the shortest path around everything else here.
+
+Its schema takes a `binding_id` and nothing else. No url, because the bridge
+navigates to the binding's own `login_url` rather than letting an agent choose
+which page receives the credential. No value, because the agent never supplies
+the secret. Page state is observed by the bridge, not accepted as an argument.
+
+Denials come back as a closed-set reason. Free text would reach an agent that
+will try to argue with it, and risks naming which credential exists.
 
 ### Capability gating
 
