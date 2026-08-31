@@ -52,6 +52,7 @@ packages/browser-bridge
   cdp-transport.ts  the bridge's own connection, behind an interface
   pipe-transport.ts CDP over --remote-debugging-pipe (never a port)
   pipe-codec.ts     NUL-delimited framing, buffered across chunks
+  proxy-server.ts   the socket a framework points cdp_url at
   loopback.ts       who may reach the local listeners
   drivers/saas.ts   1Claw-hosted backend
 ```
@@ -72,6 +73,11 @@ release; a denylist is stale the day it is written, and its failure mode is
 silent exposure. During a fill the *whole target* is blocked, not just the
 field, and push events on it are dropped rather than queued — replaying them
 afterwards would hand over exactly what suppression prevented.
+
+### Setup
+
+Point your framework's `cdp_url` at the URL the bridge prints. Every command
+crosses the gate; nothing else is attached to Chromium.
 
 ### Loopback
 

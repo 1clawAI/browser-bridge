@@ -8,6 +8,7 @@ export { CdpProxy, type ClientId, type ProxyReply } from "./cdp-proxy.js";
 export { FakeCdpTransport, type CdpMessage, type CdpTransport } from "./cdp-transport.js";
 export { PipeCdpTransport, type PipeTransportOptions } from "./pipe-transport.js";
 export { PipeDecoder, encodeMessage } from "./pipe-codec.js";
+export { CdpProxyServer, type ProxyServerOptions } from "./proxy-server.js";
 export { CAPABILITY_TOOLS, toolsFor, type VaultBackend } from "./vault-backend.js";
 export { SaasDriver, type SaasDriverOptions } from "./drivers/saas.js";
 export * from "@1claw/browser-bridge-protocol";
