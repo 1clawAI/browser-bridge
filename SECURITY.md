@@ -19,3 +19,9 @@ Report vulnerabilities to **security@1claw.co**. Do not open a public issue.
 - Protection of a secret already in memory from a process debugger.
 - That a garbage-collected `SecretHandle` was zeroed. Only `dispose()`,
   `using`, and `use()` guarantee that.
+- That a secret never exists as a string anywhere in the process. To type a
+  password, the bridge must put those characters into a CDP `Input.*` command,
+  and CDP is JSON — so the value transits the pipe to Chromium as text. That is
+  inherent to driving a browser and is not something the handle can prevent.
+  The invariant `SecretHandle` enforces is narrower and precise: the secret
+  never reaches the *agent*, in a tool result, a log line, or an error.

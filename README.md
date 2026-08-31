@@ -49,7 +49,9 @@ packages/browser-bridge
   vault-backend.ts  the trait every driver implements + capability→tool map
   cdp-policy.ts     what an agent's CDP connection may do
   cdp-proxy.ts      the only route from a framework to Chromium
-  cdp-transport.ts  the bridge's own connection (pipe in production)
+  cdp-transport.ts  the bridge's own connection, behind an interface
+  pipe-transport.ts CDP over --remote-debugging-pipe (never a port)
+  pipe-codec.ts     NUL-delimited framing, buffered across chunks
   loopback.ts       who may reach the local listeners
   drivers/saas.ts   1Claw-hosted backend
 ```

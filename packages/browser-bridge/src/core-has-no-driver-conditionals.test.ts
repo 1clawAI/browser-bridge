@@ -69,8 +69,18 @@ describe("core has no driver conditionals", () => {
 describe("core does not stringify secrets", () => {
   it("never decodes a secret buffer into a string outside SecretHandle", () => {
     const offenders: string[] = [];
+    // Files exempt from the rule, each for a stated reason. Kept as an explicit
+    // list so an exception is reviewed rather than the rule quietly weakened.
+    //
+    //   secret-handle.ts — this is where a secret is legitimately read.
+    //   pipe-codec.ts    — CDP framing. It parses protocol JSON and never sees
+    //                      a SecretHandle. It is true that a typed password
+    //                      transits the pipe inside a JSON command; that is
+    //                      inherent to CDP and is documented in SECURITY.md,
+    //                      not something this grep can prevent.
+    const EXEMPT = ["secret-handle.ts", "pipe-codec.ts"];
     for (const file of coreFiles) {
-      if (file.endsWith("secret-handle.ts")) continue;
+      if (EXEMPT.some((name) => file.endsWith(name))) continue;
       const src = readFileSync(file, "utf8");
       for (const [i, line] of src.split("\n").entries()) {
         const code = line.replace(/\/\/.*$/, "");
