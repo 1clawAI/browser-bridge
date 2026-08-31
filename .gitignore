@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+.DS_Store
+
+# Local bridge configuration and the bb_ credential it holds.
+config.toml
+.env
+.env.local

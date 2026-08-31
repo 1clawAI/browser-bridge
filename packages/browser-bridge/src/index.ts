@@ -1,0 +1,7 @@
+// Copyright (C) 2026 1Claw
+// SPDX-License-Identifier: Apache-2.0
+
+export { SecretHandle } from "./secret-handle.js";
+export { CAPABILITY_TOOLS, toolsFor, type VaultBackend } from "./vault-backend.js";
+export { SaasDriver, type SaasDriverOptions } from "./drivers/saas.js";
+export * from "@1claw/browser-bridge-protocol";
