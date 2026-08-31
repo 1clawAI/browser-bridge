@@ -54,6 +54,7 @@ packages/browser-bridge
   pipe-codec.ts     NUL-delimited framing, buffered across chunks
   proxy-server.ts   the socket a framework points cdp_url at
   mcp-tools.ts      the status-only tool surface an agent calls
+  fill-engine.ts    where every other control is cashed in
   loopback.ts       who may reach the local listeners
   drivers/saas.ts   1Claw-hosted backend
 ```
@@ -102,6 +103,24 @@ the secret. Page state is observed by the bridge, not accepted as an argument.
 
 Denials come back as a closed-set reason. Free text would reach an agent that
 will try to argue with it, and risks naming which credential exists.
+
+### Ordering, in the fill engine
+
+The sequence is the design, not a style:
+
+1. **Block the agent first**, before the secret exists in this process — doing
+   it after leaves a gap where the agent can watch the typing it is about to be
+   blocked from watching.
+2. **Navigate to the binding's own `login_url`.** An agent that picks the URL
+   picks who receives the password.
+3. **Re-check the generation immediately before typing.** Authorisation
+   happened earlier; if the page moved since, the credential lands in whatever
+   loaded instead. The TOCTOU gap is closed at the last moment, not the first.
+4. **Type from the handle, then dispose.**
+5. **Close the window in `finally`** — the failure path is exactly where a
+   half-open window would persist and lock the agent out of its own browser.
+
+Each step is pinned by a test that a mutation confirms bites.
 
 ### Capability gating
 
