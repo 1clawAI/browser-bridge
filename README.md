@@ -48,6 +48,8 @@ packages/browser-bridge
   secret-handle.ts  the invariant, as a class
   vault-backend.ts  the trait every driver implements + capability→tool map
   cdp-policy.ts     what an agent's CDP connection may do
+  cdp-proxy.ts      the only route from a framework to Chromium
+  cdp-transport.ts  the bridge's own connection (pipe in production)
   loopback.ts       who may reach the local listeners
   drivers/saas.ts   1Claw-hosted backend
 ```
