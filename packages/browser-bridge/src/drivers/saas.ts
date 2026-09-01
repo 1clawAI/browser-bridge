@@ -46,8 +46,8 @@ export type SaasDriverOptions = {
 export class SaasDriver implements VaultBackend {
   readonly #opts: SaasDriverOptions;
   readonly #fetch: typeof globalThis.fetch;
-  /** Set by `openSession`; the vault requires it on both fill routes. */
-  #sessionToken: string | undefined;
+  /** Set by `openSession`; the vault requires both on the fill routes. */
+  #session: { id: string; token: string } | undefined;
 
   constructor(opts: SaasDriverOptions) {
     this.#opts = opts;
@@ -82,9 +82,11 @@ export class SaasDriver implements VaultBackend {
       bridge_version: ctx.bridgeVersion,
       protocol_version: PROTOCOL_VERSION,
     });
-    // Held in this process only. It is what proves a fill belongs to a session
-    // this bridge opened, so it is never passed to the core or an agent.
-    this.#sessionToken = res.session_token;
+    // The token is held in this process only — it is what proves a fill belongs
+    // to a session this bridge opened, so it never reaches the core or an agent.
+    // The id is what the request bodies name; they are different values and
+    // sending one where the other belongs fails every fill.
+    this.#session = { id: res.session_id, token: res.session_token };
     return { id: res.session_id, createdAt: new Date().toISOString(), expiresAt: res.expires_at };
   }
 
@@ -92,7 +94,7 @@ export class SaasDriver implements VaultBackend {
     // No route yet. Sessions expire server-side, so dropping the token here is
     // the whole of what this process can do; pretending otherwise by calling a
     // 404 would surface as an error on every clean shutdown.
-    this.#sessionToken = undefined;
+    this.#session = undefined;
   }
 
   async authorizeFill(req: FillRequest): Promise<FillDecision> {
@@ -134,7 +136,7 @@ export class SaasDriver implements VaultBackend {
       // here: the agent asks which binding, the bridge collects the answer.
       this.#opts.userToken,
       {
-        session_id: this.#sessionId(),
+        session_id: this.#openSessionId(),
         grant_id: grant.grantId,
         generation: grant.generation,
       },
@@ -155,9 +157,9 @@ export class SaasDriver implements VaultBackend {
     throw new Error("shadow reports are not available on this backend");
   }
 
-  #sessionId(): string {
-    if (!this.#sessionToken) throw new Error("no open browser session");
-    return this.#sessionToken;
+  #openSessionId(): string {
+    if (!this.#session) throw new Error("no open browser session");
+    return this.#session.id;
   }
 
   async #raw(path: string, bearer: string, body: unknown): Promise<Response> {
@@ -170,7 +172,7 @@ export class SaasDriver implements VaultBackend {
       "x-1claw-bridge-version": this.#opts.bridgeVersion,
       "x-1claw-protocol-version": PROTOCOL_VERSION,
     };
-    if (this.#sessionToken) headers["x-1claw-bridge-session"] = this.#sessionToken;
+    if (this.#session) headers["x-1claw-bridge-session"] = this.#session.token;
 
     const res = await this.#fetch(`${this.#opts.baseUrl}${path}`, {
       method: "POST",

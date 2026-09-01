@@ -155,6 +155,66 @@ describe("SaasDriver", () => {
     expect(bearer).toBe("Bearer user_test");
   });
 
+  it("sends the session id in the body and the session token in the header", async () => {
+    // They are different values and the vault checks both: the body's id must
+    // match the session the token resolves to. Sending the token where the id
+    // belongs fails every fill, and does so at the wire rather than at compile
+    // time — which is exactly the bug this pins.
+    let body: Record<string, unknown> = {};
+    let header = "";
+    let call = 0;
+    const d = openedSession(async (_url, init) => {
+      call += 1;
+      const i = init as RequestInit;
+      if (call > 1) {
+        body = JSON.parse(String(i.body));
+        header = (i.headers as Record<string, string>)["x-1claw-bridge-session"] ?? "";
+      }
+      return call === 1
+        ? new Response(
+            JSON.stringify({ session_id: "sess-uuid", session_token: "bs_tok", expires_at: "" }),
+            { status: 200 },
+          )
+        : new Response(new TextEncoder().encode("pw"), { status: 200 });
+    });
+    await d.openSession({ clientId: "c1", bridgeVersion: "0.1.0", protocolVersion: "0.1.0" });
+    await d.consumeFill({
+      kind: "grant", grantId: "g1", bindingId: "b1",
+      loginUrl: "https://example.com/login", expiresAt: "", generation: 1,
+    });
+    expect(body.session_id).toBe("sess-uuid");
+    expect(header).toBe("bs_tok");
+    // Never the other way round.
+    expect(body.session_id).not.toBe("bs_tok");
+  });
+
+  it("takes the consume body as the credential itself, not as an envelope", async () => {
+    // The vault returns the raw secret with metadata in headers. If it ever
+    // wrapped it in JSON, this handle would hold the wrapper and the bridge
+    // would type `{"value":"…"}` into a password field.
+    let call = 0;
+    const d = openedSession(async () => {
+      call += 1;
+      return call === 1
+        ? new Response(
+            JSON.stringify({ session_id: "s1", session_token: "bs_tok", expires_at: "" }),
+            { status: 200 },
+          )
+        : new Response(new TextEncoder().encode("s3cret"), {
+            status: 200,
+            headers: { "content-type": "application/octet-stream", "x-1claw-binding-id": "b1" },
+          });
+    });
+    await d.openSession({ clientId: "c1", bridgeVersion: "0.1.0", protocolVersion: "0.1.0" });
+    const handle = await d.consumeFill({
+      kind: "grant", grantId: "g1", bindingId: "b1",
+      loginUrl: "https://example.com/login", expiresAt: "", generation: 1,
+    });
+    const got = handle.use((b) => new TextDecoder().decode(b));
+    expect(got).toBe("s3cret");
+    expect(got).not.toContain("{");
+  });
+
   it("refuses to consume before a session is open", async () => {
     // The session token is what binds a redemption to this bridge. Without one
     // there is nothing to present, and asking anyway would send a grant id to
