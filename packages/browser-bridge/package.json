@@ -27,5 +27,21 @@
   },
   "bin": {
     "1claw-browser-bridge": "./bin/1claw-browser-bridge.mjs"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1clawAI/browser-bridge.git",
+    "directory": "packages/browser-bridge"
+  },
+  "homepage": "https://github.com/1clawAI/browser-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/1clawAI/browser-bridge/issues"
+  },
+  "engines": {
+    "node": ">=20.10"
+  },
+  "description": "Governed credential fill for AI agents: the agent drives the browser, it never sees the password."
 }

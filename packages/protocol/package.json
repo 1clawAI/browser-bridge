@@ -5,7 +5,33 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "files": ["dist"],
-  "scripts": { "build": "tsc -b", "test": "vitest run" }
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1clawAI/browser-bridge.git",
+    "directory": "packages/protocol"
+  },
+  "homepage": "https://github.com/1clawAI/browser-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/1clawAI/browser-bridge/issues"
+  },
+  "engines": {
+    "node": ">=20.10"
+  },
+  "description": "Wire types shared between the 1Claw browser bridge and the vault."
 }
