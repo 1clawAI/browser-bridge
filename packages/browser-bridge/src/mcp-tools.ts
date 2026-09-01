@@ -100,6 +100,7 @@ export async function dispatchTool(
       tabOrigin: string;
       frameOrigin: string;
       formActionOrigin: string;
+      frameId: string;
       generation: number;
     };
   },

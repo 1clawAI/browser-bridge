@@ -8,16 +8,23 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset. 135 tests.
+> toolset. 145 tests here, plus the vault half.
 >
 > **Not built:** the community driver — see [Roadmap](#roadmap).
 >
-> **The server side is implemented.** Pair a device with
-> `POST /v1/browser/devices` (human only, step-up required) to mint a `bb_`
-> credential, then `POST /v1/agents/{id}/browser/sessions` opens a session and
-> `.../browser/fills` authorises a fill against the binding's host allowlist.
-> There is no feature flag — the endpoints had no implementation behind them,
-> which is a different thing from being switched off.
+> **The server side is implemented**, end to end:
+>
+> | Route | Who may call it | What it does |
+> | --- | --- | --- |
+> | `POST /v1/browser/devices` | a human, behind a step-up re-auth | pins the device key and mints the `bb_` credential, once |
+> | `POST /v1/agents/{id}/browser/sessions` | the human's token **+** `bb_` | opens a session, returns a `bs_` token |
+> | `POST /v1/agents/{id}/browser/fills` | the agent's JWT **+** `bb_` **+** `bs_` | checks tab, frame and form-action origins against the binding, applies the velocity cap, records a single-use grant |
+> | `POST /v1/agents/{id}/browser/fills/consume` | the human's token **+** `bb_` **+** `bs_`, and **not** an agent | spends the grant and returns the credential |
+>
+> The split on the last two rows is the invariant in the routing table: the
+> agent asks *which* binding, and is refused when it tries to collect the
+> answer. There is no feature flag — the endpoints had no implementation
+> behind them, which is a different thing from being switched off.
 >
 > **Going public** requires the adversarial suite green on every shipped driver.
 > Only the saas driver ships today, so that is the bar it has to clear — the
@@ -99,6 +106,30 @@ afterwards would hand over exactly what suppression prevented.
 
 ### Setup
 
+Pair the machine once — a human step, and deliberately so, since the device
+being paired is the one that will type secrets into pages:
+
+```bash
+curl -sX POST https://api.1claw.co/v1/browser/devices \
+  -H "authorization: Bearer $ONECLAW_TOKEN" \
+  -d '{"label":"my-laptop","public_key_pin":"<device key>"}'
+```
+
+The `bb_` credential comes back once. Then:
+
+```bash
+export ONECLAW_BRIDGE_CREDENTIAL=bb_…   # this machine
+export ONECLAW_TOKEN=…                  # you
+export ONECLAW_AGENT_TOKEN=…            # the agent
+export ONECLAW_AGENT_ID=…
+1claw-browser-bridge --chrome /path/to/chrome
+```
+
+Three credentials because the vault requires three distinct facts — which
+machine, which person, which agent — and collapsing any two would let one stand
+in for another. The bridge refuses to start with any of them missing rather than
+failing on the first fill.
+
 Point your framework's `cdp_url` at the URL the bridge prints. Every command
 crosses the gate; nothing else is attached to Chromium.
 
@@ -166,7 +197,7 @@ rejecting only cross-site `Origin`s.
 
 ## Roadmap
 
-- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks + Chromium pipe transport + per-client `BrowserContext` + MCP stdio + the composition root and `1claw-browser-bridge` bin. Vault side: device pairing, session create and fill authorisation are implemented.
+- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks + Chromium pipe transport + per-client `BrowserContext` + MCP stdio + the composition root and `1claw-browser-bridge` bin. Vault side: pairing, sessions, fill authorisation and grant consumption.
 - **OSS launch** — the gate is the adversarial harness passing against the saas driver, plus: community driver, form action + fingerprint checks, mock-vault, and the vault handlers enabled behind a flag so the client can be exercised end to end.
 - **v0.2** — governed credential registration, HITL approval queue, TOTP fill
 - **v0.3** — cloud-runtime sidecar (platform trust model)

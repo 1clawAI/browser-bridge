@@ -70,6 +70,7 @@ export type BridgeHandle = {
       tabOrigin: string;
       frameOrigin: string;
       formActionOrigin: string;
+      frameId: string;
       generation: number;
     },
   ): Promise<ToolResult>;

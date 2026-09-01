@@ -62,6 +62,9 @@ export type FillRequest = {
   readonly frameOrigin: string;
   /** Origin the form will POST to, resolved from the live DOM at request time. */
   readonly formActionOrigin: string;
+  /** The target the fill is for. Recorded on the grant, so a grant is redeemable
+   *  only for the frame it was decided about. */
+  readonly frameId: string;
   /** Monotonic per-target counter; invalidated by navigation. See TOCTOU handling. */
   readonly generation: number;
 };

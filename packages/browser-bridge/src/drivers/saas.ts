@@ -19,6 +19,18 @@ export type SaasDriverOptions = {
   readonly baseUrl: string;
   /** The `bb_` bridge credential from `1claw browser-bridge login`. Never leaves this process. */
   readonly bridgeCredential: string;
+  /**
+   * The caller the vault authenticates as: a user session token or `1ck_` key
+   * for opening a session, the agent's own JWT for asking about a fill.
+   *
+   * Two credentials, not one. The vault refuses a session opened with an agent
+   * token and refuses a fill that does not also name an agent, so a single
+   * bearer could not satisfy both routes even if we wanted it to.
+   */
+  readonly userToken: string;
+  readonly agentToken: string;
+  /** The agent fills are requested for. Part of the path on both fill routes. */
+  readonly agentId: string;
   readonly bridgeVersion: string;
   readonly fetch?: typeof globalThis.fetch;
 };
@@ -34,6 +46,8 @@ export type SaasDriverOptions = {
 export class SaasDriver implements VaultBackend {
   readonly #opts: SaasDriverOptions;
   readonly #fetch: typeof globalThis.fetch;
+  /** Set by `openSession`; the vault requires it on both fill routes. */
+  #sessionToken: string | undefined;
 
   constructor(opts: SaasDriverOptions) {
     this.#opts = opts;
@@ -46,64 +60,121 @@ export class SaasDriver implements VaultBackend {
       // v0.2. Off until the registration flow and its adversarial suite land;
       // the tool is absent rather than present-and-refusing.
       registration: false,
-      checkout: true,
-      signing: true,
-      hitl: true,
+      // Off until the vault routes exist. A capability advertised ahead of its
+      // endpoint registers a tool that fails on first call, which teaches an
+      // agent to retry against a 404.
+      checkout: false,
+      signing: false,
+      hitl: false,
       centralAudit: true,
-      shadowReports: true,
+      shadowReports: false,
     };
   }
 
   async openSession(ctx: SessionCtx): Promise<Session> {
-    return this.#post<Session>("/v1/browser/sessions", {
+    const res = await this.#post<{
+      session_id: string;
+      session_token: string;
+      expires_at: string;
+    }>(`/v1/agents/${encodeURIComponent(this.#opts.agentId)}/browser/sessions`, this.#opts.userToken, {
+      agent_id: this.#opts.agentId,
       client_id: ctx.clientId,
       bridge_version: ctx.bridgeVersion,
       protocol_version: PROTOCOL_VERSION,
     });
+    // Held in this process only. It is what proves a fill belongs to a session
+    // this bridge opened, so it is never passed to the core or an agent.
+    this.#sessionToken = res.session_token;
+    return { id: res.session_id, createdAt: new Date().toISOString(), expiresAt: res.expires_at };
   }
 
-  async closeSession(id: string): Promise<void> {
-    await this.#post(`/v1/browser/sessions/${encodeURIComponent(id)}/close`, {});
+  async closeSession(_id: string): Promise<void> {
+    // No route yet. Sessions expire server-side, so dropping the token here is
+    // the whole of what this process can do; pretending otherwise by calling a
+    // 404 would surface as an error on every clean shutdown.
+    this.#sessionToken = undefined;
   }
 
   async authorizeFill(req: FillRequest): Promise<FillDecision> {
-    return this.#post<FillDecision>("/v1/browser/fills/authorize", {
-      session_id: req.sessionId,
-      binding_id: req.bindingId,
-      tab_origin: req.tabOrigin,
-      frame_origin: req.frameOrigin,
-      form_action_origin: req.formActionOrigin,
+    const res = await this.#post<{
+      kind: string;
+      grant_id: string;
+      binding_id: string;
+      login_url: string;
+      expires_at: string;
+    }>(
+      `/v1/agents/${encodeURIComponent(this.#opts.agentId)}/browser/fills`,
+      // The agent's token: the vault requires the fill to name the agent it is
+      // for, and refuses a bridge credential presented on its own.
+      this.#opts.agentToken,
+      {
+        session_id: req.sessionId,
+        binding_id: req.bindingId,
+        tab_origin: req.tabOrigin,
+        frame_origin: req.frameOrigin,
+        form_action_origin: req.formActionOrigin,
+        frame_id: req.frameId,
+        generation: req.generation,
+      },
+    );
+    return {
+      kind: "grant",
+      grantId: res.grant_id,
+      bindingId: res.binding_id,
+      loginUrl: res.login_url,
+      expiresAt: res.expires_at,
       generation: req.generation,
-    });
+    };
   }
 
   async consumeFill(grant: Grant): Promise<SecretHandle> {
-    const res = await this.#raw("/v1/browser/fills/consume", {
-      grant_id: grant.grantId,
-    });
+    const res = await this.#raw(
+      `/v1/agents/${encodeURIComponent(this.#opts.agentId)}/browser/fills/consume`,
+      // The user's token, not the agent's. The vault refuses an agent principal
+      // here: the agent asks which binding, the bridge collects the answer.
+      this.#opts.userToken,
+      {
+        session_id: this.#sessionId(),
+        grant_id: grant.grantId,
+        generation: grant.generation,
+      },
+    );
     // Read as bytes, never as a string: a string would be interned and live
     // until GC with no way to zero it.
     const bytes = new Uint8Array(await res.arrayBuffer());
     return SecretHandle.adopt(bytes, `binding:${grant.bindingId}`);
   }
 
-  async audit(event: AuditEvent): Promise<void> {
-    await this.#post("/v1/browser/audit", event);
+  async audit(_event: AuditEvent): Promise<void> {
+    // The vault writes its own hash-chained audit entry for every pair, session,
+    // authorise and consume. A second, client-supplied record would be a log an
+    // attacker on this machine controls, sitting beside one they do not.
   }
 
   async policySnapshot(): Promise<GuardrailSnapshot> {
-    return this.#post<GuardrailSnapshot>("/v1/browser/policy/snapshot", {});
+    throw new Error("shadow reports are not available on this backend");
   }
 
-  async #raw(path: string, body: unknown): Promise<Response> {
+  #sessionId(): string {
+    if (!this.#sessionToken) throw new Error("no open browser session");
+    return this.#sessionToken;
+  }
+
+  async #raw(path: string, bearer: string, body: unknown): Promise<Response> {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      authorization: `Bearer ${bearer}`,
+      // The device credential. A separate header from the bearer because it
+      // authenticates a different thing: the machine, not the principal.
+      "x-1claw-bridge-credential": this.#opts.bridgeCredential,
+      "x-1claw-bridge-version": this.#opts.bridgeVersion,
+      "x-1claw-protocol-version": PROTOCOL_VERSION,
+    };
+    if (this.#sessionToken) headers["x-1claw-bridge-session"] = this.#sessionToken;
+
     const res = await this.#fetch(`${this.#opts.baseUrl}${path}`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.#opts.bridgeCredential}`,
-        "x-1claw-bridge-version": this.#opts.bridgeVersion,
-        "x-1claw-protocol-version": PROTOCOL_VERSION,
-      },
+      headers,
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -115,7 +186,7 @@ export class SaasDriver implements VaultBackend {
     return res;
   }
 
-  async #post<T>(path: string, body: unknown): Promise<T> {
-    return (await this.#raw(path, body)).json() as Promise<T>;
+  async #post<T>(path: string, bearer: string, body: unknown): Promise<T> {
+    return (await this.#raw(path, bearer, body)).json() as Promise<T>;
   }
 }

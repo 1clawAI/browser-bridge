@@ -16,7 +16,15 @@
  * Env:
  *   ONECLAW_API_URL            vault base (default https://api.1claw.co)
  *   ONECLAW_BRIDGE_CREDENTIAL  the bb_ credential from `1claw browser-bridge login`
+ *   ONECLAW_TOKEN              your user session token or 1ck_ key — opens the
+ *                              session and collects the secret
+ *   ONECLAW_AGENT_TOKEN        the agent's JWT — asks whether a fill is allowed
+ *   ONECLAW_AGENT_ID           the agent fills are requested for
  *   ONECLAW_BRIDGE_PORT        loopback port (default: ephemeral)
+ *
+ * Three credentials, because the vault requires three distinct things: which
+ * machine (bb_), which person (ONECLAW_TOKEN), which agent (ONECLAW_AGENT_TOKEN).
+ * Collapsing them would let any one of the three stand in for the others.
  */
 
 import { startBridge, SaasDriver } from "../dist/index.js";
@@ -59,9 +67,24 @@ if (!credential.startsWith("bb_")) {
   process.exit(2);
 }
 
+const required = {
+  ONECLAW_TOKEN: "your user session token or 1ck_ key",
+  ONECLAW_AGENT_TOKEN: "the agent's JWT",
+  ONECLAW_AGENT_ID: "the agent id fills are for",
+};
+for (const [name, what] of Object.entries(required)) {
+  if (!process.env[name]) {
+    console.error(`${name} is not set (${what}).`);
+    process.exit(2);
+  }
+}
+
 const backend = new SaasDriver({
   baseUrl: (process.env.ONECLAW_API_URL || "https://api.1claw.co").replace(/\/$/, ""),
   bridgeCredential: credential,
+  userToken: process.env.ONECLAW_TOKEN,
+  agentToken: process.env.ONECLAW_AGENT_TOKEN,
+  agentId: process.env.ONECLAW_AGENT_ID,
   bridgeVersion: version,
 });
 
