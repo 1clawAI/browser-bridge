@@ -151,6 +151,15 @@ machine, which person, which agent — and collapsing any two would let one stan
 in for another. The bridge refuses to start with any of them missing rather than
 failing on the first fill.
 
+`ONECLAW_TOKEN` is worth being clear about: it is your ordinary user credential,
+and the bridge process holds it for as long as it runs. That is not a
+side effect of the design, it is the design — opening a session and collecting a
+credential are things a person authorises, and the alternative is a long-lived
+credential that can collect secrets without one. Scope it the way you would any
+token on a workstation, and run the bridge as a foreground process you started
+rather than a service that outlives your attention. Sessions expire after eight
+hours for the same reason.
+
 Point your framework's `cdp_url` at the URL the bridge prints. Every command
 crosses the gate; nothing else is attached to Chromium.
 
