@@ -53,6 +53,12 @@ export class FakeCdpTransport implements CdpTransport {
     // fill engine could address pages by `params.targetId` — a dialect the
     // browser does not speak — with every test still green. A test double that
     // answers a protocol nobody implements verifies nothing about the protocol.
+    // Chromium answers Target.createTarget with the new targetId.
+    if (msg.method === "Target.createTarget") {
+      const id = `target-${this.sent.filter((m) => m.method === "Target.createTarget").length}`;
+      return { ...base, result: { targetId: id } };
+    }
+
     if (msg.method === "Target.attachToTarget") {
       const target = typeof msg.params?.targetId === "string" ? msg.params.targetId : "unknown";
       const sessionId = `session-for-${target}`;

