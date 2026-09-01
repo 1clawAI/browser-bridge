@@ -66,10 +66,19 @@ export class FillEngine {
 
     let handle: SecretHandle | undefined;
     try {
-      // 2. The binding's URL, not the agent's.
-      await this.#send({ method: "Page.navigate", params: { targetId, url: grant.loginUrl } });
+      // 2. Attach, and address the page the way CDP actually addresses it.
+      //
+      // Page.navigate, DOM.querySelector and Input.insertText take no
+      // `targetId` param — an attached page is addressed by the top-level
+      // `sessionId` that Target.attachToTarget returns. Sending targetId in
+      // params was a dialect Chromium does not speak, and it is the same
+      // assumption that made the gate's fill-window check inert.
+      const sessionId = await this.#attach(targetId);
 
-      // 3. Navigation bumps the generation, so this catches both a page that
+      // 3. The binding's URL, not the agent's.
+      await this.#send({ sessionId, method: "Page.navigate", params: { url: grant.loginUrl } });
+
+      // 4. Navigation bumps the generation, so this catches both a page that
       //    moved on its own and one the agent moved underneath us.
       if (currentGeneration(targetId) !== grant.generation) {
         return { status: "aborted", reason: "generation_stale" };
@@ -80,8 +89,9 @@ export class FillEngine {
       // Focus first: typing into whatever happens to hold focus is how a
       // password ends up in a search box, or in the page's chat widget.
       await this.#send({
+        sessionId,
         method: "DOM.querySelector",
-        params: { targetId, selector },
+        params: { selector },
       });
 
       // Re-check after every await that could have yielded to a navigation.
@@ -89,9 +99,9 @@ export class FillEngine {
         return { status: "aborted", reason: "navigated" };
       }
 
-      // 4. Borrow, type, and let `use` zero the buffer even if this throws.
+      // 5. Borrow, type, and let `use` zero the buffer even if this throws.
       const text = handle.use((bytes) => new TextDecoder().decode(bytes));
-      await this.#send({ method: "Input.insertText", params: { targetId, text } });
+      await this.#send({ sessionId, method: "Input.insertText", params: { text } });
 
       return { status: "filled" };
     } catch (e) {
@@ -103,6 +113,24 @@ export class FillEngine {
       // 5. Always. A stuck window locks the agent out of its own browser.
       gate.closeFillWindow(targetId);
     }
+  }
+
+  /**
+   * Attach to the target and return the session to address it by.
+   *
+   * Goes straight to the transport: the gate exists to judge the agent, and the
+   * bridge is the thing holding the fill window open.
+   */
+  async #attach(targetId: string): Promise<string> {
+    const reply = await this.#send({
+      method: "Target.attachToTarget",
+      params: { targetId, flatten: true },
+    });
+    const result = reply.result as { sessionId?: unknown } | undefined;
+    if (typeof result?.sessionId !== "string") {
+      throw new Error("Target.attachToTarget returned no sessionId");
+    }
+    return result.sessionId;
   }
 
   /** Bridge-originated commands bypass the gate: the gate is for the agent. */

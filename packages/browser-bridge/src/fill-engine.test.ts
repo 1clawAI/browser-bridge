@@ -98,6 +98,10 @@ describe("ordering is the design", () => {
     const transport = new FakeCdpTransport();
     const spy = vi.spyOn(transport, "send").mockImplementation(async (m: CdpMessage) => {
       if (m.method === "Input.insertText") states.push(gate.isFilling(TARGET));
+      // Answer the attach handshake; the engine addresses the page by session.
+      if (m.method === "Target.attachToTarget") {
+        return { ...(m.id !== undefined ? { id: m.id } : {}), result: { sessionId: "s1" } };
+      }
       return { ...(m.id !== undefined ? { id: m.id } : {}), result: {} };
     });
     const engine = new FillEngine({
@@ -167,6 +171,9 @@ describe("failure paths", () => {
     vi.spyOn(transport, "send").mockImplementation(async (m: CdpMessage) => {
       calls += 1;
       if (m.method === "Input.insertText") throw new Error("typing failed");
+      if (m.method === "Target.attachToTarget") {
+        return { ...(m.id !== undefined ? { id: m.id } : {}), result: { sessionId: "s1" } };
+      }
       return { ...(m.id !== undefined ? { id: m.id } : {}), result: {} };
     });
     const engine = new FillEngine({

@@ -39,12 +39,28 @@ export class FakeCdpTransport implements CdpTransport {
   #listeners: ((evt: CdpMessage) => void)[] = [];
   closed = false;
 
+  /** targetId → the session this fake handed out for it. */
+  readonly sessions = new Map<string, string>();
+
   async send(msg: CdpMessage): Promise<CdpMessage> {
     this.sent.push(msg);
-    // Spread rather than `id: msg.id` — exactOptionalPropertyTypes means an
-    // explicit undefined is not the same as an absent key, and CDP replies to
-    // an event-shaped message carry no id at all.
-    return { ...(msg.id !== undefined ? { id: msg.id } : {}), result: { ok: true } };
+    const base = msg.id !== undefined ? { id: msg.id } : {};
+
+    // Answer Target.attachToTarget the way Chromium does: with a sessionId.
+    //
+    // The fake used to reply `{ ok: true }` to everything, so nothing in the
+    // suite ever went through the attach handshake, and both the proxy and the
+    // fill engine could address pages by `params.targetId` — a dialect the
+    // browser does not speak — with every test still green. A test double that
+    // answers a protocol nobody implements verifies nothing about the protocol.
+    if (msg.method === "Target.attachToTarget") {
+      const target = typeof msg.params?.targetId === "string" ? msg.params.targetId : "unknown";
+      const sessionId = `session-for-${target}`;
+      this.sessions.set(target, sessionId);
+      return { ...base, result: { sessionId } };
+    }
+
+    return { ...base, result: { ok: true } };
   }
 
   onEvent(listener: (evt: CdpMessage) => void): void {

@@ -38,6 +38,32 @@ export class CdpProxy {
   readonly #contexts = new Map<ClientId, string>();
   /** clientId → sink for events destined for that client. */
   readonly #sinks = new Map<ClientId, (evt: CdpMessage) => void>();
+  /**
+   * sessionId → targetId, learned from `Target.attachToTarget` replies.
+   *
+   * CDP addresses an attached page by a **top-level `sessionId`**, not by
+   * `params.targetId`. Runtime.evaluate, Runtime.callFunctionOn, DOM.getDocument,
+   * DOM.querySelector, Input.dispatchKeyEvent, Input.insertText and
+   * Accessibility.getFullAXTree — every command that can read a form field —
+   * carry no `params.targetId` at all.
+   *
+   * Reading only `params.targetId` therefore left `targetId` undefined for
+   * exactly the methods the fill window exists to stop: the `&&` short-circuited
+   * and the block never ran. Target.attachToTarget is itself allowlisted, so
+   * obtaining a session was a permitted first step.
+   */
+  readonly #sessionTargets = new Map<string, string>();
+  /**
+   * sessionId → the client that attached it.
+   *
+   * Event delivery was `for (const [, sink] of this.#sinks) sink(evt)` — an
+   * unconditional broadcast that discarded the clientId one line before it would
+   * have been used. Every client saw every other client's Page.*, Network.*,
+   * DOM.* and Target.* events, which with Network.getCookies on the allowlist is
+   * the "agent B is simply logged in as agent A" outcome this class's own doc
+   * names as the thing not to lose.
+   */
+  readonly #sessionOwners = new Map<string, ClientId>();
 
   constructor(transport: CdpTransport, gate: CdpGate = new CdpGate()) {
     this.#transport = transport;
@@ -58,6 +84,13 @@ export class CdpProxy {
   unregister(clientId: ClientId): void {
     this.#contexts.delete(clientId);
     this.#sinks.delete(clientId);
+    // Otherwise a later client could inherit a departed client's sessions.
+    for (const [session, owner] of this.#sessionOwners) {
+      if (owner === clientId) {
+        this.#sessionOwners.delete(session);
+        this.#sessionTargets.delete(session);
+      }
+    }
   }
 
   contextOf(clientId: ClientId): string | undefined {
@@ -79,7 +112,7 @@ export class CdpProxy {
       return this.#refuse(msg, "malformed command: no method");
     }
 
-    const targetId = typeof msg.params?.targetId === "string" ? msg.params.targetId : undefined;
+    const targetId = this.#targetOf(msg);
     const decision: CdpDecision = this.#gate.evaluateCommand({
       method: msg.method,
       ...(targetId !== undefined ? { targetId } : {}),
@@ -93,7 +126,39 @@ export class CdpProxy {
     }
 
     const result = await this.#transport.send(msg);
+    this.#learnSession(clientId, msg, result);
     return { kind: "forward", message: result };
+  }
+
+  /**
+   * Which target is this message about?
+   *
+   * A session id resolves through the attach map; `params.targetId` is still
+   * honoured for the session-less commands that genuinely carry it
+   * (Target.closeTarget, Target.attachToTarget itself). Checking both is what
+   * makes the fill window cover the methods that can read the field.
+   */
+  #targetOf(msg: CdpMessage): string | undefined {
+    if (typeof msg.sessionId === "string") {
+      const mapped = this.#sessionTargets.get(msg.sessionId);
+      if (mapped !== undefined) return mapped;
+      // An unknown session is not a free pass. Returning the session id itself
+      // keeps it distinct from "no target", so a fill window opened on a target
+      // we could not map still fails closed rather than matching nothing.
+      return msg.sessionId;
+    }
+    return typeof msg.params?.targetId === "string" ? msg.params.targetId : undefined;
+  }
+
+  /** Record the session Chromium just handed out, so later commands resolve. */
+  #learnSession(clientId: ClientId, sent: CdpMessage, reply: CdpMessage): void {
+    if (sent.method !== "Target.attachToTarget") return;
+    const target = typeof sent.params?.targetId === "string" ? sent.params.targetId : undefined;
+    const result = reply.result as { sessionId?: unknown } | undefined;
+    const session = typeof result?.sessionId === "string" ? result.sessionId : undefined;
+    if (session === undefined) return;
+    if (target !== undefined) this.#sessionTargets.set(session, target);
+    this.#sessionOwners.set(session, clientId);
   }
 
   #refuse(msg: CdpMessage, message: string): ProxyReply {
@@ -115,7 +180,10 @@ export class CdpProxy {
    */
   #fanOutEvent(evt: CdpMessage): void {
     if (!evt.method) return;
-    const targetId = typeof evt.params?.targetId === "string" ? evt.params.targetId : undefined;
+    // Same resolution as commands: events from an attached session carry
+    // sessionId at the top level, so reading only params.targetId made
+    // per-target suppression inert and left only the global never-forward list.
+    const targetId = this.#targetOf(evt);
     const forwardable = this.#gate.shouldForwardEvent({
       method: evt.method,
       ...(targetId !== undefined ? { targetId } : {}),
@@ -123,6 +191,30 @@ export class CdpProxy {
     });
     if (!forwardable) return;
 
+    // Deliver to the client the session belongs to, not to everyone.
+    //
+    // An event carrying a session we never saw attached is dropped rather than
+    // broadcast: it belongs to somebody, and guessing wrong is exactly the leak.
+    // Dropped here and now — nothing buffers, so there is nothing to replay.
+    if (typeof evt.sessionId === "string") {
+      const owner = this.#sessionOwners.get(evt.sessionId);
+      if (owner === undefined) return;
+      this.#sinks.get(owner)?.(evt);
+      return;
+    }
+
+    // Browser-level events may name the context they concern; deliver only to
+    // clients confined to it.
+    const ctx =
+      typeof evt.params?.browserContextId === "string" ? evt.params.browserContextId : undefined;
+    if (ctx !== undefined) {
+      for (const [clientId, sink] of this.#sinks) {
+        if (this.#contexts.get(clientId) === ctx) sink(evt);
+      }
+      return;
+    }
+
+    // Genuinely global (browser lifecycle). No context to discriminate on.
     for (const [, sink] of this.#sinks) sink(evt);
   }
 

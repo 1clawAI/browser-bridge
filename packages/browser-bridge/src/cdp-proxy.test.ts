@@ -141,3 +141,175 @@ describe("shutdown", () => {
     expect(proxy.contextOf("agent-a")).toBeUndefined();
   });
 });
+
+/**
+ * The shape Chromium actually sends.
+ *
+ * Every assertion in the block above addresses a page as
+ * `{ method, params: { targetId } }`. Chromium does not produce that for any of
+ * the methods that can read a form field: an attached page is addressed by the
+ * top-level `sessionId` that Target.attachToTarget returns, and Runtime.evaluate,
+ * DOM.getDocument, DOM.querySelector, Input.dispatchKeyEvent and
+ * Accessibility.getFullAXTree carry no params.targetId at all.
+ *
+ * So the fill-window block — the control whose own doc says "a fill in progress
+ * blocks the whole target, not just the field. Anything less leaves
+ * Runtime.evaluate free to read the value being typed" — never ran for the
+ * methods it exists to stop, and the suite stayed green.
+ */
+describe("a session addresses a target the way CDP does", () => {
+  const TARGET = "target-1";
+
+  async function attached() {
+    const transport = new FakeCdpTransport();
+    const proxy = new CdpProxy(transport);
+    proxy.register("agent", "ctx-1", () => {});
+    const reply = await proxy.handleCommand("agent", {
+      id: 1,
+      method: "Target.attachToTarget",
+      params: { targetId: TARGET, flatten: true },
+    });
+    const sessionId = (reply.message.result as { sessionId: string }).sessionId;
+    return { proxy, transport, sessionId };
+  }
+
+  it("blocks Runtime.evaluate on a filling target addressed by sessionId", async () => {
+    const { proxy, transport, sessionId } = await attached();
+    proxy.gate.openFillWindow(TARGET);
+
+    const before = transport.sent.length;
+    const reply = await proxy.handleCommand("agent", {
+      id: 2,
+      sessionId,
+      method: "Runtime.evaluate",
+      params: { expression: "document.querySelector('input[type=password]').value" },
+    });
+
+    expect(reply.kind).toBe("refuse");
+    expect(reply.message.error?.message).toContain("fill_in_progress");
+    // The refusal must happen before Chromium sees it: for Runtime.evaluate the
+    // side effect is the exfiltration.
+    expect(transport.sent.length).toBe(before);
+  });
+
+  it("blocks every field-reading method the same way", async () => {
+    for (const method of [
+      "Runtime.callFunctionOn",
+      "DOM.getDocument",
+      "DOM.querySelector",
+      "Input.dispatchKeyEvent",
+      "Accessibility.getFullAXTree",
+    ]) {
+      const { proxy, sessionId } = await attached();
+      proxy.gate.openFillWindow(TARGET);
+      const reply = await proxy.handleCommand("agent", { id: 3, sessionId, method, params: {} });
+      expect(reply.kind, `${method} was forwarded during a fill`).toBe("refuse");
+    }
+  });
+
+  it("lets the same command through once the window closes", async () => {
+    const { proxy, sessionId } = await attached();
+    proxy.gate.openFillWindow(TARGET);
+    proxy.gate.closeFillWindow(TARGET);
+    const reply = await proxy.handleCommand("agent", {
+      id: 4,
+      sessionId,
+      method: "Runtime.evaluate",
+      params: { expression: "1+1" },
+    });
+    expect(reply.kind).toBe("forward");
+  });
+
+  it("does not treat an unmapped session as no target", async () => {
+    // Failing open here would restore the bug via a session the proxy never saw
+    // attach — for instance one opened before the bridge started watching.
+    const transport = new FakeCdpTransport();
+    const proxy = new CdpProxy(transport);
+    proxy.register("agent", "ctx-1", () => {});
+    proxy.gate.openFillWindow("session-unknown");
+    const reply = await proxy.handleCommand("agent", {
+      id: 5,
+      sessionId: "session-unknown",
+      method: "Runtime.evaluate",
+      params: { expression: "x" },
+    });
+    expect(reply.kind).toBe("refuse");
+  });
+
+  it("suppresses events for a filling target addressed by sessionId", async () => {
+    const { proxy, transport, sessionId } = await attached();
+    const seen: string[] = [];
+    proxy.register("agent", "ctx-1", (e) => seen.push(e.method ?? ""));
+    proxy.gate.openFillWindow(TARGET);
+    transport.emit({ sessionId, method: "DOM.attributeModified", params: { value: "hunter2" } });
+    expect(seen).not.toContain("DOM.attributeModified");
+  });
+});
+
+/**
+ * "Agent B is simply logged in as A" — the outcome the class doc names.
+ *
+ * #contexts was written by register() and read only for an existence check, and
+ * fan-out was an unconditional broadcast that discarded the clientId one line
+ * before it would have been used. No test noticed, because every test registered
+ * a single client.
+ */
+describe("one client's events do not reach another", () => {
+  function twoClients() {
+    const transport = new FakeCdpTransport();
+    const proxy = new CdpProxy(transport);
+    const a: string[] = [];
+    const b: string[] = [];
+    proxy.register("agent-a", "ctx-a", (e) => a.push(e.method ?? ""));
+    proxy.register("agent-b", "ctx-b", (e) => b.push(e.method ?? ""));
+    return { proxy, transport, a, b };
+  }
+
+  it("delivers a session's events only to the client that attached it", async () => {
+    const { proxy, transport, a, b } = twoClients();
+    const reply = await proxy.handleCommand("agent-a", {
+      id: 1,
+      method: "Target.attachToTarget",
+      params: { targetId: "t-a", flatten: true },
+    });
+    const sessionId = (reply.message.result as { sessionId: string }).sessionId;
+
+    transport.emit({ sessionId, method: "Network.responseReceived", params: {} });
+
+    expect(a).toContain("Network.responseReceived");
+    expect(b, "agent B saw agent A's network events").not.toContain("Network.responseReceived");
+  });
+
+  it("drops an event for a session nobody attached", () => {
+    const { transport, a, b } = twoClients();
+    transport.emit({ sessionId: "session-nobody-owns", method: "Page.loadEventFired", params: {} });
+    expect(a).toHaveLength(0);
+    expect(b).toHaveLength(0);
+  });
+
+  it("scopes context-tagged events to clients in that context", () => {
+    const { transport, a, b } = twoClients();
+    transport.emit({
+      method: "Target.targetCreated",
+      params: { browserContextId: "ctx-a" },
+    });
+    expect(a).toContain("Target.targetCreated");
+    expect(b).not.toContain("Target.targetCreated");
+  });
+
+  it("forgets a departed client's sessions", async () => {
+    const { proxy, transport, b } = twoClients();
+    const reply = await proxy.handleCommand("agent-a", {
+      id: 1,
+      method: "Target.attachToTarget",
+      params: { targetId: "t-a", flatten: true },
+    });
+    const sessionId = (reply.message.result as { sessionId: string }).sessionId;
+    proxy.unregister("agent-a");
+
+    transport.emit({ sessionId, method: "Network.responseReceived", params: {} });
+    expect(b, "a departed client's session leaked to the survivor").not.toContain(
+      "Network.responseReceived",
+    );
+  });
+});
