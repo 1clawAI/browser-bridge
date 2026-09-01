@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Writable, Readable } from "node:stream";
 import type { CdpMessage, CdpTransport } from "./cdp-transport.js";
 import { PipeDecoder, encodeMessage } from "./pipe-codec.js";
@@ -77,13 +80,30 @@ export class PipeCdpTransport implements CdpTransport {
 
   /** Launch Chromium with the pipe wired up. */
   static launch(opts: PipeTransportOptions): PipeCdpTransport {
+    // A profile directory is not optional.
+    //
+    // Without --user-data-dir Chromium uses the person's real profile, and two
+    // things follow. The visible one: their profile picker appears and a launch
+    // hands off to the already-running browser, which then exits — the pipe
+    // closes and every command fails with "socket ended by the other party".
+    //
+    // The one that matters: the bridge would be driving the user's own browser,
+    // with their logged-in sessions, cookies and extensions. This package
+    // promises each client an isolated BrowserContext and that the agent never
+    // sees more than it was granted; attaching to a personal profile hands it
+    // every session that profile holds. An isolated profile is the floor the
+    // rest of the model stands on, so it is created when the caller does not
+    // name one rather than being left to a flag.
+    const userDataDir =
+      opts.userDataDir ?? mkdtempSync(join(tmpdir(), "1claw-bridge-profile-"));
+
     const args = [
       "--remote-debugging-pipe",
       // No port, ever. See the note above: a port is reachable by the pages
       // being driven, which defeats the entire ownership model.
       "--no-first-run",
       "--no-default-browser-check",
-      ...(opts.userDataDir ? [`--user-data-dir=${opts.userDataDir}`] : []),
+      `--user-data-dir=${userDataDir}`,
       ...(opts.args ?? []),
     ];
 

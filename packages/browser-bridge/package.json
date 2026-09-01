@@ -24,5 +24,8 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"
+  },
+  "bin": {
+    "1claw-browser-bridge": "./bin/1claw-browser-bridge.mjs"
   }
 }

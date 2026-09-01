@@ -1,6 +1,10 @@
 // Copyright (C) 2026 1Claw
 // SPDX-License-Identifier: Apache-2.0
 
+// The composition root. Everything below is a part; this is the assembled
+// system, and the only thing a caller should need to start a bridge.
+export { startBridge, type BridgeOptions, type BridgeHandle } from "./bridge.js";
+
 export { SecretHandle } from "./secret-handle.js";
 export { CdpGate, type CdpCommand, type CdpDecision, type CdpDenyReason, type CdpEvent } from "./cdp-policy.js";
 export { checkLoopbackRequest, type LoopbackCheck, type LoopbackRequest } from "./loopback.js";
