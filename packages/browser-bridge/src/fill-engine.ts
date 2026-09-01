@@ -51,6 +51,13 @@ export type FillEngineDeps = {
    * context the agent never sees.
    */
   readonly browserContextOf?: (targetId: string) => string | undefined;
+  /**
+   * Where the real failure goes.
+   *
+   * Separate from the return value on purpose: the operator needs the detail
+   * and the agent must not have it, so they cannot be the same string.
+   */
+  readonly onError?: (error: unknown) => void;
 };
 
 export class FillEngine {
@@ -127,7 +134,13 @@ export class FillEngine {
 
       return { status: "filled" };
     } catch (e) {
-      return { status: "error", message: e instanceof Error ? e.message : String(e) };
+      // Deliberately not `e.message`. This return value is handed to the agent,
+      // and the thrown text comes from the backend and the transport — a driver
+      // that interpolates a response body, or a vault error naming what it was
+      // reading, would put that text in front of the caller this package exists
+      // to keep it away from. The detail goes to the operator instead.
+      this.#deps.onError?.(e);
+      return { status: "error", message: "the fill did not complete" };
     } finally {
       // A handle that was consumed but never typed — because the generation
       // moved, or the transport threw — is still live until this runs.

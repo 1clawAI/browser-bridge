@@ -35,6 +35,14 @@ export type ToolResult =
   | { readonly status: "denied"; readonly reason: string }
   | { readonly status: "awaiting_approval"; readonly approvalId: string; readonly pollAfterMs: number }
   | { readonly status: "in_progress"; readonly bindingId: string }
+  /**
+   * The page moved between authorisation and typing, so nothing was typed.
+   *
+   * Its own status rather than an `error`, because the two call for opposite
+   * responses: an error is worth retrying, and a stale generation retried
+   * blindly is how a credential lands on whatever page arrived in the meantime.
+   */
+  | { readonly status: "aborted"; readonly reason: string }
   | { readonly status: "error"; readonly message: string };
 
 const SCHEMAS: Record<string, Readonly<Record<string, unknown>>> = {

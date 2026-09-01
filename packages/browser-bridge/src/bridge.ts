@@ -4,7 +4,7 @@
 import { randomBytes } from "node:crypto";
 
 import { CdpGate } from "./cdp-policy.js";
-import type { CdpTransport } from "./cdp-transport.js";
+import type { CdpMessage, CdpTransport } from "./cdp-transport.js";
 import { FillEngine, type FillOutcome } from "./fill-engine.js";
 import { buildToolset, dispatchTool, type ToolDefinition, type ToolResult } from "./mcp-tools.js";
 import { PipeCdpTransport } from "./pipe-transport.js";
@@ -103,16 +103,48 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
   const gate = new CdpGate();
   const generations = new Generations();
 
+  // sessionId → targetId, learned from the browser's own attach announcements.
+  //
+  // Navigation events are addressed by session; the fill engine's TOCTOU check
+  // is keyed by target. This listener used to bump the generation under
+  // `evt.sessionId` while the engine read it under a targetId, so the two
+  // counters never met: every navigation bumped a key nothing read, and a grant
+  // survived the navigation it existed to be invalidated by.
+  const sessionTargets = new Map<string, string>();
+
+  /** Set once the proxy exists; it learns the attachments clients make. */
+  let proxyTargetForSession: ((sessionId: string) => string | undefined) | undefined;
+
+  const targetOfEvent = (evt: CdpMessage): string | undefined => {
+    // The frame the event is about, when the browser names it.
+    const frame = (evt.params as { frame?: { id?: unknown } } | undefined)?.frame;
+    if (typeof frame?.id === "string") return frame.id;
+    if (typeof evt.params?.targetId === "string") return evt.params.targetId as string;
+    if (typeof evt.sessionId === "string") {
+      return sessionTargets.get(evt.sessionId) ?? proxyTargetForSession?.(evt.sessionId);
+    }
+    return undefined;
+  };
+
   // Navigation is what invalidates an authorisation, so the generation is
   // driven by the browser's own events rather than by anything the agent says.
   transport.onEvent((evt) => {
+    if (evt.method === "Target.attachedToTarget") {
+      const p = evt.params as
+        | { sessionId?: unknown; targetInfo?: { targetId?: unknown } }
+        | undefined;
+      if (typeof p?.sessionId === "string" && typeof p.targetInfo?.targetId === "string") {
+        sessionTargets.set(p.sessionId, p.targetInfo.targetId);
+      }
+      return;
+    }
+    if (evt.method === "Target.detachedFromTarget") {
+      const sid = (evt.params as { sessionId?: unknown } | undefined)?.sessionId;
+      if (typeof sid === "string") sessionTargets.delete(sid);
+      return;
+    }
     if (evt.method === "Page.frameNavigated" || evt.method === "Page.navigatedWithinDocument") {
-      const target =
-        typeof evt.sessionId === "string"
-          ? evt.sessionId
-          : typeof evt.params?.targetId === "string"
-            ? evt.params.targetId
-            : undefined;
+      const target = targetOfEvent(evt);
       if (target) generations.bump(target);
     }
   });
@@ -122,6 +154,9 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
     transport,
     gate,
     currentGeneration: (t) => generations.current(t),
+    // stderr, not the tool result. The operator needs the reason; the agent
+    // must not have it.
+    onError: (e) => console.error("[browser-bridge] fill failed:", e),
   });
 
   // A token in the URL path, minted per run. The socket is loopback-only and
@@ -135,6 +170,10 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
     ...(opts.host !== undefined ? { host: opts.host } : {}),
     ...(opts.port !== undefined ? { port: opts.port } : {}),
   });
+
+  // Now that the proxy exists, navigation events can fall back to the
+  // attachments it learned from clients issuing Target.attachToTarget.
+  proxyTargetForSession = (sid) => server.proxy.targetForSession(sid);
 
   const { host, port, url } = await server.listen();
   const sessionId = randomBytes(12).toString("hex");
@@ -179,10 +218,12 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
             case "filled":
               return { status: "filled", bindingId: decision.bindingId };
             case "aborted":
-              // The page moved between authorisation and typing. Naming the
-              // reason matters: an agent that retries blindly on a stale
-              // generation is asking for the credential to land elsewhere.
-              return { status: "error", message: `aborted: ${outcome.reason}` };
+              // The page moved between authorisation and typing. Its own
+              // status, not an error: an agent that retries blindly on a stale
+              // generation is asking for the credential to land on whatever
+              // page arrived in the meantime, and `error` is the status most
+              // likely to be retried.
+              return { status: "aborted", reason: outcome.reason };
             default:
               return { status: "error", message: outcome.message };
           }

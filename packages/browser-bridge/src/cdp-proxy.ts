@@ -98,6 +98,17 @@ export class CdpProxy {
   }
 
   /**
+   * The target a CDP session is attached to, if this proxy saw the attach.
+   *
+   * Navigation events are addressed by session; the fill engine's TOCTOU check
+   * is keyed by target. Without this translation the two never meet, and a
+   * grant survives a navigation it was supposed to be invalidated by.
+   */
+  targetForSession(sessionId: string): string | undefined {
+    return this.#sessionTargets.get(sessionId);
+  }
+
+  /**
    * Handle one command from a client.
    *
    * Returns the reply to send back. A refusal is shaped as an ordinary CDP

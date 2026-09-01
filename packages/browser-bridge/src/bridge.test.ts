@@ -46,6 +46,18 @@ function backend(): VaultBackend {
   } as unknown as VaultBackend;
 }
 
+const FILL_ARGS = { binding_id: "b1", target_id: TARGET, selector: "#password" } as const;
+
+/** What the bridge reads off the live page. Never what the agent claims. */
+const observed = (over: Partial<ReturnType<typeof base>> = {}) => () => ({ ...base(), ...over });
+const base = () => ({
+  tabOrigin: "https://app.example.com",
+  frameOrigin: "https://app.example.com",
+  formActionOrigin: "https://app.example.com",
+  frameId: TARGET,
+  generation: 0,
+});
+
 let bridge: BridgeHandle | undefined;
 afterEach(async () => {
   await bridge?.close();
@@ -86,39 +98,43 @@ describe("the assembled bridge", () => {
 
   it("types the credential without ever returning it", async () => {
     const { bridge: b, transport } = await start();
-    const result = await b.callTool(
-      "browser_fill",
-      { binding_id: "b1", target_id: TARGET, selector: "#password" },
-      () => ({
-        tabOrigin: "https://app.example.com",
-        frameOrigin: "https://app.example.com",
-        formActionOrigin: "https://app.example.com",
-        generation: 0,
-      }),
-    );
+    // The tool's registered name. Calling anything else takes the "unknown tool"
+    // path, which returns an error containing no secret and asserts nothing —
+    // this test used to call "browser_fill" and pass without typing a character.
+    expect(b.tools.map((t) => t.name)).toContain("request_fill");
+
+    const result = await b.callTool("request_fill", FILL_ARGS, observed());
 
     // Whatever the outcome, the secret must not be in it.
     expect(JSON.stringify(result)).not.toContain(PASSWORD);
 
+    // Unconditional: a guard around these is a guard around the only assertions
+    // that say the fill happened at all.
     const typed = transport.sent.filter((m: CdpMessage) => m.method === "Input.insertText");
-    if (typed.length > 0) {
-      // It went into a target the agent never scripted, addressed by session.
-      expect(transport.sent.some((m) => m.method === "Target.createTarget")).toBe(true);
-      expect(typed[0]?.sessionId).toBeDefined();
-      expect(typed[0]?.params?.targetId).toBeUndefined();
-    }
+    expect(typed.length).toBeGreaterThan(0);
+    // It went into a target the agent never scripted, addressed by session.
+    expect(transport.sent.some((m) => m.method === "Target.createTarget")).toBe(true);
+    expect(typed[0]?.sessionId).toBeDefined();
+    expect(typed[0]?.params?.targetId).toBeUndefined();
   });
 
   it("bumps the generation from the browser's own navigation events", async () => {
     // The TOCTOU check is only as good as its clock. If the generation came
     // from anything the agent said, the agent could hold it still while moving
     // the page underneath the fill.
-    const { transport } = await start();
-    transport.emit({ sessionId: "s-1", method: "Page.frameNavigated", params: {} });
-    transport.emit({ sessionId: "s-1", method: "Page.frameNavigated", params: {} });
-    // No assertion on the number itself — that it is driven by events at all is
-    // the property, and a fill against a stale generation aborts.
-    expect(true).toBe(true);
+    const { bridge: b, transport } = await start();
+
+    // A navigation the *agent* never mentioned. The fill still has to notice.
+    transport.emit({ method: "Page.frameNavigated", params: { frame: { id: TARGET } } });
+
+    const result = await b.callTool("request_fill", FILL_ARGS, observed());
+    // Its own status, not an error: an agent that retries an error is asking
+    // for the credential to land on whatever page arrived in the meantime.
+    expect(result.status).toBe("aborted");
+    expect(result).toMatchObject({ reason: "generation_stale" });
+    expect(JSON.stringify(result)).not.toContain(PASSWORD);
+    // Nothing was typed into the page that moved.
+    expect(transport.sent.filter((m) => m.method === "Input.insertText")).toHaveLength(0);
   });
 
   it("closes the transport when the bridge closes", async () => {

@@ -8,7 +8,7 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset. 145 tests here, plus the vault half.
+> toolset. 156 tests here, plus the vault half.
 >
 > **Not built:** the community driver — see [Roadmap](#roadmap).
 >
@@ -30,13 +30,21 @@ sees the password.
 > Only the saas driver ships today, so that is the bar it has to clear — the
 > community driver raises the bar rather than delays it.
 >
-> The suite is not a substitute for that bar. In August 2026 it passed 121/121
-> while three controls did nothing: the fill window never fired (commands were
-> matched on `params.targetId`, which CDP does not use for the methods that read
-> a form field), every client received every other client's events, and a
-> listener installed before a fill could read the credential typed during it.
-> All three are fixed and covered; the lesson is that green is evidence about
-> the tests as much as the code.
+> That suite is `adversarial.test.ts`: it drives `startBridge`, the entry point
+> a real deployment uses, and plays the agent as hostile rather than careless.
+> Each of its tests is checked by breaking the control it covers and confirming
+> it goes red, because a green suite is evidence about the tests as much as the
+> code. In August 2026 the per-file suites passed 121/121 while three controls
+> did nothing: the fill window never fired (commands were matched on
+> `params.targetId`, which CDP does not use for the methods that read a form
+> field), every client received every other client's events, and a listener
+> installed before a fill could read the credential typed during it. Every
+> component was individually correct; all three bugs were in the seams.
+>
+> A fourth of the same shape was found writing the suite and is fixed here: the
+> TOCTOU generation was bumped under a CDP *session* id and read under a
+> *target* id, so the two counters never met and a grant survived the navigation
+> it existed to be invalidated by.
 
 ## The invariant
 
