@@ -12,12 +12,12 @@ sees the password.
 >
 > **Not built:** the community driver — see [Roadmap](#roadmap).
 >
-> **The server side is switched off.** The 1Claw vault endpoints this client
-> talks to (`POST /v1/agents/{id}/browser/sessions`, `.../browser/fills`) are
-> deployed but deliberately refuse with *"browser sessions are not enabled on
-> this deployment yet"*. Nothing here reaches a live backend today, so a fill
-> against production will fail by design rather than by bug. Run it against a
-> local backend, or wait for the flag.
+> **The server side is implemented.** Pair a device with
+> `POST /v1/browser/devices` (human only, step-up required) to mint a `bb_`
+> credential, then `POST /v1/agents/{id}/browser/sessions` opens a session and
+> `.../browser/fills` authorises a fill against the binding's host allowlist.
+> There is no feature flag — the endpoints had no implementation behind them,
+> which is a different thing from being switched off.
 >
 > **Going public** requires the adversarial suite green on every shipped driver.
 > Only the saas driver ships today, so that is the bar it has to clear — the
@@ -166,7 +166,7 @@ rejecting only cross-site `Origin`s.
 
 ## Roadmap
 
-- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks + Chromium pipe transport + per-client `BrowserContext` + MCP stdio. Vault handlers exist but refuse: the feature is off server-side.
+- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks + Chromium pipe transport + per-client `BrowserContext` + MCP stdio + the composition root and `1claw-browser-bridge` bin. Vault side: device pairing, session create and fill authorisation are implemented.
 - **OSS launch** — the gate is the adversarial harness passing against the saas driver, plus: community driver, form action + fingerprint checks, mock-vault, and the vault handlers enabled behind a flag so the client can be exercised end to end.
 - **v0.2** — governed credential registration, HITL approval queue, TOTP fill
 - **v0.3** — cloud-runtime sidecar (platform trust model)
