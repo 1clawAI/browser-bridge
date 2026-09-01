@@ -17,6 +17,7 @@ sees the password.
 > | Route | Who may call it | What it does |
 > | --- | --- | --- |
 > | `POST /v1/browser/devices` | a human, behind a step-up re-auth | pins the device key and mints the `bb_` credential, once |
+> | `POST /v1/browser/credentials` | a human, behind a step-up re-auth | defines a binding: which secret, and into which hosts |
 > | `POST /v1/agents/{id}/browser/sessions` | the human's token **+** `bb_` | opens a session, returns a `bs_` token |
 > | `POST /v1/agents/{id}/browser/fills` | the agent's JWT **+** `bb_` **+** `bs_` | checks tab, frame and form-action origins against the binding, applies the velocity cap, records a single-use grant |
 > | `POST /v1/agents/{id}/browser/fills/consume` | the human's token **+** `bb_` **+** `bs_`, and **not** an agent | spends the grant and returns the credential |
@@ -123,7 +124,19 @@ curl -sX POST https://api.1claw.co/v1/browser/devices \
   -d '{"label":"my-laptop","public_key_pin":"<device key>"}'
 ```
 
-The `bb_` credential comes back once. Then:
+The `bb_` credential comes back once. Define what may be filled where — the
+hosts are compared exactly, and a wildcard is refused rather than stored,
+because a wildcard would match nothing while looking like it allowed something:
+
+```bash
+curl -sX POST https://api.1claw.co/v1/browser/credentials \
+  -H "authorization: Bearer $ONECLAW_TOKEN" \
+  -d '{"label":"acme","vault_id":"…","secret_path":"acme/password",
+       "login_url":"https://app.example.com/login",
+       "allowed_hosts":["app.example.com"],"sso_hosts":["login.okta.com"]}'
+```
+
+Then:
 
 ```bash
 export ONECLAW_BRIDGE_CREDENTIAL=bb_…   # this machine
