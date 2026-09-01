@@ -3,12 +3,33 @@
 Governed credential fill for AI agents. The agent drives the browser; it never
 sees the password.
 
-> **Status: v0.1, private.** In: the `VaultBackend` trait, `SecretHandle`, the
-> saas driver, the CDP allowlist gate and the loopback checks. Not yet: the
-> Chromium transport those two policies plug into (pipe attach, proxy socket),
-> the MCP surface, and the community driver — see [Roadmap](#roadmap). This
-> repository goes public only after the adversarial suite is green on every
-> shipped driver.
+> **Status: v0.1, private.**
+>
+> **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
+> allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
+> fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
+> toolset. 135 tests.
+>
+> **Not built:** the community driver — see [Roadmap](#roadmap).
+>
+> **The server side is switched off.** The 1Claw vault endpoints this client
+> talks to (`POST /v1/agents/{id}/browser/sessions`, `.../browser/fills`) are
+> deployed but deliberately refuse with *"browser sessions are not enabled on
+> this deployment yet"*. Nothing here reaches a live backend today, so a fill
+> against production will fail by design rather than by bug. Run it against a
+> local backend, or wait for the flag.
+>
+> **Going public** requires the adversarial suite green on every shipped driver.
+> Only the saas driver ships today, so that is the bar it has to clear — the
+> community driver raises the bar rather than delays it.
+>
+> The suite is not a substitute for that bar. In August 2026 it passed 121/121
+> while three controls did nothing: the fill window never fired (commands were
+> matched on `params.targetId`, which CDP does not use for the methods that read
+> a form field), every client received every other client's events, and a
+> listener installed before a fill could read the credential typed during it.
+> All three are fixed and covered; the lesson is that green is evidence about
+> the tests as much as the code.
 
 ## The invariant
 
@@ -145,8 +166,8 @@ rejecting only cross-site `Origin`s.
 
 ## Roadmap
 
-- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks → Chromium pipe transport, per-client `BrowserContext`, MCP stdio, vault handlers
-- **OSS launch** — community driver, form action + fingerprint checks, adversarial harness, mock-vault
+- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks + Chromium pipe transport + per-client `BrowserContext` + MCP stdio. Vault handlers exist but refuse: the feature is off server-side.
+- **OSS launch** — the gate is the adversarial harness passing against the saas driver, plus: community driver, form action + fingerprint checks, mock-vault, and the vault handlers enabled behind a flag so the client can be exercised end to end.
 - **v0.2** — governed credential registration, HITL approval queue, TOTP fill
 - **v0.3** — cloud-runtime sidecar (platform trust model)
 
