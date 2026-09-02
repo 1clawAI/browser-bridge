@@ -33,6 +33,13 @@ export {
   VAULT_FORMAT,
   type VaultFile,
   type VaultEntry,
+  // Exported so one CLI can manage this file. `1claw browser vault` is the
+  // only tool for it now, and it must use this implementation rather than a
+  // second copy of the format — which is how the product ended up with two
+  // encrypted local files whose key derivations did not match.
+  type VaultContents,
+  type RegistrationPolicy,
+  type CapturePolicy,
 } from "./drivers/local-vault-file.js";
 export { hostAllowed, hostOf } from "./host-match.js";
 export * from "@1claw/browser-bridge-protocol";

@@ -5,6 +5,16 @@
 /**
  * Manage a local encrypted vault for the browser bridge.
  *
+ * DEPRECATED — use `1claw browser vault` instead.
+ *
+ * Two CLIs whose names differ by a hyphen, one of which shares a word with an
+ * unrelated subcommand (`1claw vault` manages *hosted* vaults), is a naming
+ * problem nobody can hold in their head. `@1claw/cli` now carries all of this
+ * under `1claw browser`, reading and writing this same file through this same
+ * implementation — there is no second format.
+ *
+ * This binary keeps working and prints a pointer. It goes in the next minor.
+ *
  *   1claw-vault init   <file>
  *   1claw-vault add    <file> --id <id> --url <login-url> --hosts a.com,.b.com
  *   1claw-vault list   <file>
@@ -24,6 +34,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { sealVault, openVault } from "../dist/drivers/local-vault-file.js";
+
+// Said once, on stderr, so it never contaminates piped output.
+if (process.env.ONECLAW_SUPPRESS_DEPRECATION !== "1") {
+  process.stderr.write(
+    "1claw-vault is deprecated — use `1claw browser vault` (same file, same format).\n" +
+      "  Set ONECLAW_SUPPRESS_DEPRECATION=1 to silence this.\n",
+  );
+}
 
 const [cmd, file, ...rest] = process.argv.slice(2);
 const flag = (n) => { const i = rest.indexOf(`--${n}`); return i > -1 ? rest[i + 1] : undefined; };
@@ -134,8 +152,14 @@ try {
     for (const e of doc.entries) {
       console.log(`credential\t${e.id}\t${e.loginUrl}\t${e.allowedHosts.join(",")}`);
     }
-    for (const r of doc.registrations) {
+    for (const r of doc.registrations ?? []) {
       console.log(`signup    \t${r.id}\t${r.signupUrl}\t${r.username}`);
+    }
+    // Capture policies too. `allow-capture` could write one that `list` never
+    // showed, so the only way to check what a vault authorises was to decrypt
+    // it by hand — for the one policy type that reads a secret off a page.
+    for (const c of doc.captures ?? []) {
+      console.log(`capture   \t${c.id}\t${c.captureUrl}\t${c.allowedHosts.join(",")}`);
     }
   } else if (cmd === "remove") {
     const id = flag("id");

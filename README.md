@@ -3,28 +3,40 @@
 Governed credential fill for AI agents. The agent drives the browser; it never
 sees the password.
 
-> **Status: v0.1, private.**
+> **Status: v0.1, public** — [1clawAI/browser-bridge](https://github.com/1clawAI/browser-bridge), Apache-2.0.
 >
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, three backends, and governed account registration. 266 tests here,
-> twenty of them against a launched Chromium, two of those driving real Puppeteer and Playwright, plus the vault half.
+> toolset, three backends, governed account registration, and governed
+> credential **capture** — a fill in reverse, for the key a site issues you.
+> 266 tests here, twenty of them against a launched Chromium, two of those
+> driving real Puppeteer and Playwright, plus the vault half.
 >
 > **The server side is implemented**, end to end:
 >
 > | Route | Who may call it | What it does |
 > | --- | --- | --- |
 > | `POST /v1/browser/devices` | a human, behind a step-up re-auth | pins the device key and mints the `bb_` credential, once |
+> | `GET /v1/browser/devices` | a human | lists what is paired. Revoked devices stay listed — "was this machine ever paired" is the question asked after a laptop goes missing |
+> | `DELETE /v1/browser/devices/{id}` | a human | revokes a device. This is what makes a leaked `bb_` stop working |
 > | `POST /v1/browser/credentials` | a human, behind a step-up re-auth | defines a binding: which secret, and into which hosts |
 > | `POST /v1/agents/{id}/browser/sessions` | the human's token **+** `bb_` | opens a session, returns a `bs_` token |
 > | `POST /v1/agents/{id}/browser/fills` | the agent's JWT **+** `bb_` **+** `bs_` | checks tab, frame and form-action origins against the binding, applies the velocity cap, records a single-use grant |
 > | `POST /v1/agents/{id}/browser/fills/consume` | the human's token **+** `bb_` **+** `bs_`, and **not** an agent | spends the grant and returns the credential |
 >
-> The split on the last two rows is the invariant in the routing table: the
+> The split on the two fill rows is the invariant in the routing table: the
 > agent asks *which* binding, and is refused when it tries to collect the
-> answer. There is no feature flag — the endpoints had no implementation
-> behind them, which is a different thing from being switched off.
+> answer.
+>
+> A fill request must also carry `form_path`, `field_names`, `redirect_chain`
+> and `current_generation`. They were once optional and defaulted server-side,
+> which turned three of the policy's own checks off — the redirect chain was
+> always empty so its check never ran, `current_generation` defaulted to
+> `generation` and was compared against itself, and `form_path` defaulted to
+> `""`, which matches no fingerprint and denied every binding carrying one.
+> Send `current_generation` as the generation you observe *now*; the same value
+> as `generation` makes the staleness check compare a value to itself.
 >
 > **The bar for shipping** is the adversarial suite green on every backend that
 > ships. Three do — hosted, local file, and in-memory — and it is.
@@ -270,6 +282,49 @@ correctly, since the account does not exist yet. Whoever reads that email can
 complete the signup, so handing it to the agent would undo the point; that needs
 its own design rather than a quick addition.
 
+### Capturing the key a site issues you
+
+The mirror of a fill. A site generates an API key and shows it once; the bridge
+reads it and stores it in the vault, and the agent never sees the value. That is
+`begin_credential_capture`, and like registration it needs a human-authored
+policy first:
+
+```bash
+1claw-vault allow-capture ~/.1claw/vault.json \
+  --id    acme-key \
+  --url   https://acme.example.com/settings/api \
+  --login https://acme.example.com/login \
+  --hosts acme.example.com \
+  --generate-sel '#generate' \
+  --value-sel    '#api-key'
+```
+
+Then, from an agent already logged in on a tab:
+
+```jsonc
+{ "site_id": "acme-key", "target_id": "..." }   // → { "status": "captured", "entryId": "..." }
+```
+
+The agent names the site and the tab it is logged in on. It does **not** choose
+the URL, the control that generates the key, the element the value is read from,
+or the entry it lands in — all of that is the policy's. Without that split,
+"capture" would be "read anything I point you at, into anywhere I choose".
+
+**It earns the fill invariant the same way.** The agent's own target is windowed
+*before* any secret exists — a listener installed earlier needs no CDP command
+during the window to watch a read, so the window cannot open around the read
+itself. The value is read in a target the agent has never scripted, in the
+agent's own browser context so the site's login applies, and wrapped in a
+`SecretHandle` the instant it exists. It never becomes a tool result, a log
+line, or a return value.
+
+Some sites put the key in an attribute rather than the text — a copy button
+carrying `data-clipboard-text` next to a label. `--value-attr` reads that
+instead, so the value does not arrive with the label attached.
+
+Like registration, **nothing is stored unless a value was actually read**:
+`{"status":"rejected","reason":"no_value_found"}` means the vault is untouched.
+
 ### With the hosted vault
 
 Pair the machine once — a human step, and deliberately so, since the device
@@ -373,15 +428,29 @@ token compared in constant time.
 
 ### The agent's surface
 
-`request_fill` asks the bridge to type a credential. It does not return one —
-the agent learns whether the fill happened, never what was typed. There is
-deliberately no tool that returns credential material, because a tool that
-could would be the shortest path around everything else here.
+Three tools, and none of them returns credential material. That is not an
+oversight to be fixed later: a tool that could return a secret would be the
+shortest path around everything else here.
 
-Its schema takes a `binding_id` and nothing else. No url, because the bridge
-navigates to the binding's own `login_url` rather than letting an agent choose
-which page receives the credential. No value, because the agent never supplies
-the secret. Page state is observed by the bridge, not accepted as an argument.
+| Tool | The agent supplies | It gets back |
+| --- | --- | --- |
+| `request_fill` | a `binding_id` | whether the fill happened |
+| `begin_credential_registration` | a `site_id` | whether an account was created |
+| `begin_credential_capture` | a `site_id` and the tab it is logged in on | an entry id |
+
+What each one *cannot* supply is the point:
+
+- **No url.** The bridge navigates to the binding's own `login_url`, or the
+  policy's `captureUrl`. An agent that could choose the page could choose which
+  page receives the credential.
+- **No value.** The agent never supplies a secret, and never receives one.
+- **No selector, and no username.** For registration and capture alike, what is
+  typed and where it is read from come from the human-authored policy. The
+  agent names *which* pre-authorised site and nothing else, which is what stops
+  "capture" becoming "read whatever I point you at, into wherever I choose".
+- **No page state.** Origins, form path, field names and generation are observed
+  by the bridge. An agent that supplied them would choose which page looks
+  trustworthy.
 
 Denials come back as a closed-set reason. Free text would reach an agent that
 will try to argue with it, and risks naming which credential exists.
@@ -433,8 +502,8 @@ rejecting only cross-site `Origin`s.
 
 ## Roadmap
 
-- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks + Chromium pipe transport + per-client `BrowserContext` + MCP stdio + the composition root and `1claw-browser-bridge` bin. Vault side: device pairing and revocation, binding CRUD with form fingerprints, sessions, fill authorisation and single-use grant consumption. Adversarial suite, and three tests against a real Chromium.
-- **OSS launch** — the gate was the adversarial harness passing against the saas driver. It does, and the vault half is implemented rather than flagged off, so the client is exercised end to end today (30 assertions against production). Form-action and fingerprint checks are done. What remains is a **mock-vault** so someone without a 1Claw account can run the thing — a real gap for a public repo, since the only backend that exists talks to an API they cannot reach.
+- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks + Chromium pipe transport + per-client `BrowserContext` + MCP stdio + the composition root and `1claw-browser-bridge` bin. Vault side: device pairing and revocation, binding CRUD with form fingerprints, sessions, fill authorisation and single-use grant consumption. Adversarial suite, and twenty tests against a real Chromium.
+- **OSS launch** — the gate was the adversarial harness passing against the saas driver. It does, and the vault half is implemented rather than flagged off, so the client is exercised end to end today (33 assertions against production). Form-action and fingerprint checks are done. What remains is a **mock-vault** so someone without a 1Claw account can run the thing — a real gap for a public repo, since the only backend that exists talks to an API they cannot reach.
 
   **Done.** `MockVaultDriver` is an in-memory backend, and
   `examples/demo.mjs` runs the whole thing with no account: a local login form,
@@ -447,7 +516,14 @@ rejecting only cross-site `Origin`s.
 
   The community driver has landed too: `LocalVaultDriver`, an AES-256-GCM file keyed by scrypt from a passphrase you hold, with `1claw-vault` to manage it. Three backends now ship, and the adversarial suite is green on all of them — which was always the real bar.
 - **v0.2** — governed credential registration **(done, local backend)** and governed credential **capture** — a fill in reverse: while logged in, the bridge reads a secret the site generates (an API key, a token) in a windowed page and stores it in the vault, without the agent seeing it **(done, local backend; see `examples/full-flow-capture.mjs`)**; HITL approval queue, TOTP fill, and both on the hosted backend still to come
-- **v0.3** — cloud-runtime sidecar (platform trust model)
+- **v0.3** — **cloud-runtime sidecar**: the same flow, unattended, inside a 1Claw
+  runtime container. The bridge already does all of it on a laptop; what it needs
+  is hosting. Two of the three obstacles are packaging (a browser in the image, a
+  process to run the bridge); the third is the real one — opening a session
+  currently wants a human's token every eight hours. The design puts the bridge
+  in the sidecar, which already holds credentials the agent calls into but never
+  holds, so the agent JWT is never presented to `consume` by construction rather
+  than by a check somebody might later drop.
 
 ## Security
 
