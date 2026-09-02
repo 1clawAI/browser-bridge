@@ -215,6 +215,10 @@ describe.skipIf(!HAVE_CHROME)("registering against a real signup form", () => {
         sessionId: "s", bindingId: "acme",
         tabOrigin: origin, frameOrigin: origin, formActionOrigin: origin,
         frameId: "T", generation: 1,
+ formPath: "/login",
+ fieldNames: ["username", "password"],
+ redirectChain: [],
+ currentGeneration: 1,
       } as never);
       if (fill.kind !== "grant") throw new Error(`expected a fill grant, got ${fill.kind}`);
 

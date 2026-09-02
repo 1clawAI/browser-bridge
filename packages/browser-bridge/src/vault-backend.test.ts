@@ -131,6 +131,10 @@ describe("SaasDriver", () => {
       sessionId: "s1", bindingId: "b1",
       tabOrigin: "https://example.com", frameOrigin: "https://example.com",
       formActionOrigin: "https://example.com", frameId: "T1", generation: 1,
+ formPath: "/login",
+ fieldNames: ["username", "password"],
+ redirectChain: [],
+ currentGeneration: 1,
     });
     expect(bearers).toEqual(["Bearer user_test", "Bearer agent_test"]);
   });
@@ -258,6 +262,63 @@ describe("SaasDriver", () => {
     await call().catch((e: Error) => {
       expect(e.message.length).toBeLessThan(400);
     });
+  });
+
+  it("posts every field the fill policy reads, not just the origins", async () => {
+    // Three of the vault's checks are decided by fields no client used to send.
+    // The vault had them all as `#[serde(default)]`, so the redirect chain
+    // arrived empty and its loop never ran, the current generation defaulted to
+    // the requested one and was compared against itself, and form_path
+    // defaulted to "" — which matches no fingerprint pattern, so every
+    // fingerprinted binding was denied. Two checks off and one feature that
+    // could not work, with nothing failing anywhere to show it.
+    //
+    // The vault refuses a request that omits them now. This asserts the driver
+    // sends them, because a required field the client does not send is the same
+    // outage with a clearer error.
+    let posted: Record<string, unknown> = {};
+    const d = openedSession(async (url, init) => {
+      const isFill = String(url).endsWith("/browser/fills");
+      if (isFill) posted = JSON.parse(String((init as RequestInit).body ?? "{}"));
+      return new Response(
+        JSON.stringify(
+          isFill
+            ? {
+                decision: "grant",
+                grant_id: "g1",
+                binding_id: "b1",
+                login_url: "https://example.com/login",
+                expires_at: "",
+                generation: 3,
+              }
+            : { session_id: "s1", session_token: "bs_tok", expires_at: "" },
+        ),
+        { status: 200 },
+      );
+    });
+    await d.openSession({ clientId: "c1", bridgeVersion: "0.1.0", protocolVersion: "0.1.0" });
+    await d.authorizeFill({
+      sessionId: "s1",
+      bindingId: "b1",
+      tabOrigin: "https://example.com",
+      frameOrigin: "https://example.com",
+      formActionOrigin: "https://example.com",
+      frameId: "T1",
+      generation: 3,
+      formPath: "/accounts/login",
+      fieldNames: ["username", "password"],
+      redirectChain: ["sso.example.com"],
+      // Deliberately not 3. If these are equal the driver can collapse one onto
+      // the other and no assertion notices — which is the shape of the bug:
+      // the vault's `unwrap_or(req.generation)` compared the value to itself.
+      currentGeneration: 4,
+    });
+
+    expect(posted.form_path).toBe("/accounts/login");
+    expect(posted.field_names).toEqual(["username", "password"]);
+    expect(posted.redirect_chain).toEqual(["sso.example.com"]);
+    expect(posted.current_generation, "the observed generation was collapsed onto the requested one").toBe(4);
+    expect(posted.generation).toBe(3);
   });
 
   it("writes no client-side audit — the vault keeps the chained one", async () => {

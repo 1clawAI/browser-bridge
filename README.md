@@ -8,8 +8,8 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, three backends, and governed account registration. 228 tests here,
-> thirteen of them against a launched Chromium, plus the vault half.
+> toolset, three backends, and governed account registration. 234 tests here,
+> fifteen of them against a launched Chromium, plus the vault half.
 >
 > **The server side is implemented**, end to end:
 >
@@ -110,6 +110,16 @@ release; a denylist is stale the day it is written, and its failure mode is
 silent exposure. During a fill the *whole target* is blocked, not just the
 field, and push events on it are dropped rather than queued — replaying them
 afterwards would hand over exactly what suppression prevented.
+
+**Each client sees only its own pages, on commands as well as events.** Every
+client gets its own Chromium `BrowserContext`, and every command naming a
+target or a session is checked against what that client owns: `getTargets` is
+narrowed to the caller's own pages, and `attachToTarget` on someone else's is
+refused even when the id is known. Without that check the isolation is
+decorative — one agent lists another's targets, attaches, and runs
+`Runtime.evaluate` or `Network.getCookies` against a page it was never granted,
+which is the same as being logged in as that user. A test drives that exact
+sequence through two sockets on one real Chromium and requires it to fail.
 
 ### How it fits together
 

@@ -241,3 +241,76 @@ describe("launch flags given to startBridge", () => {
     }
   }, 30_000);
 });
+
+describe("two agents on one real browser", () => {
+  /**
+   * The cross-client attack, run against Chromium rather than a double.
+   *
+   * The fake answers the protocol we believe Chromium speaks, and this is
+   * exactly the kind of claim it cannot settle: whether a real browser hands
+   * out a working session for another context's target, and whether the proxy
+   * stops the sequence before it does. Two sockets, two contexts, one browser.
+   */
+  it.skipIf(!HAVE_CHROME)("cannot reach each other's pages through the bridge", async () => {
+    const bridge = await startBridge({
+      executablePath: CHROME,
+      backend: new MockVaultDriver({ bindings: [] }),
+      host: "127.0.0.1",
+      port: 0,
+      args: LAUNCH_ARGS,
+    });
+
+    const open = async () => {
+      const ws = new WebSocket(bridge.url);
+      await new Promise((res, rej) => {
+        ws.once("open", res);
+        ws.once("error", rej);
+      });
+      let next = 1;
+      const call = (method: string, params?: Record<string, unknown>) =>
+        new Promise<Record<string, unknown>>((resolve) => {
+          const id = next++;
+          const onMessage = (d: WebSocket.RawData) => {
+            const m = JSON.parse(String(d));
+            if (m.id === id) {
+              ws.off("message", onMessage);
+              resolve(m);
+            }
+          };
+          ws.on("message", onMessage);
+          ws.send(JSON.stringify({ id, method, ...(params ? { params } : {}) }));
+        });
+      return { ws, call };
+    };
+
+    const a = await open();
+    const b = await open();
+    try {
+      const created = await a.call("Target.createTarget", { url: `${origin}/form` });
+      const aTarget = (created.result as { targetId: string }).targetId;
+      expect(aTarget, "A could not open its own page").toBeTruthy();
+
+      // B lists what it can see. A's page must not be in it.
+      const listed = await b.call("Target.getTargets");
+      const infos =
+        (listed.result as { targetInfos?: { targetId: string }[] })?.targetInfos ?? [];
+      expect(infos.map((t) => t.targetId)).not.toContain(aTarget);
+
+      // B names it anyway — the id is guessable, so listing is not the defence.
+      const attached = await b.call("Target.attachToTarget", {
+        targetId: aTarget,
+        flatten: true,
+      });
+      expect(attached.error, "B attached to A's page on a real browser").toBeTruthy();
+      expect((attached.result as { sessionId?: string })?.sessionId).toBeUndefined();
+
+      // And A still has full use of its own page.
+      const own = await a.call("Target.attachToTarget", { targetId: aTarget, flatten: true });
+      expect((own.result as { sessionId: string }).sessionId).toBeTruthy();
+    } finally {
+      a.ws.close();
+      b.ws.close();
+      await bridge.close();
+    }
+  }, 30_000);
+});

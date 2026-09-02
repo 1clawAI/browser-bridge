@@ -65,6 +65,27 @@ export class FakeCdpTransport implements CdpTransport {
       return { ...base, result: { targetId: id } };
     }
 
+    // Chromium answers Target.getTargets with every target it knows about,
+    // across every browser context. Modelling that is the point: a fake that
+    // returns nothing would let an unfiltered reply pass a confinement test,
+    // which is how the command-side gap survived a full events-confinement
+    // suite in the first place.
+    if (msg.method === "Target.getTargets") {
+      const targetInfos = this.sent
+        .filter((m) => m.method === "Target.createTarget")
+        .map((m, i) => ({
+          targetId: `target-${i}`,
+          type: "page",
+          title: "",
+          url: typeof m.params?.url === "string" ? m.params.url : "",
+          attached: false,
+          ...(typeof m.params?.browserContextId === "string"
+            ? { browserContextId: m.params.browserContextId }
+            : {}),
+        }));
+      return { ...base, result: { targetInfos } };
+    }
+
     if (msg.method === "Target.attachToTarget") {
       const target = typeof msg.params?.targetId === "string" ? msg.params.targetId : "unknown";
       const sessionId = `session-for-${target}`;

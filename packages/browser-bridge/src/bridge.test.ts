@@ -56,6 +56,10 @@ const base = () => ({
   formActionOrigin: "https://app.example.com",
   frameId: TARGET,
   generation: 0,
+  formPath: "/login",
+  fieldNames: ["username", "password"],
+  redirectChain: [],
+  currentGeneration: 0,
 });
 
 let bridge: BridgeHandle | undefined;

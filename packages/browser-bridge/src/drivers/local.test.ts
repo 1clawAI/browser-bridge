@@ -36,6 +36,10 @@ const req = (over: Partial<FillRequest> = {}): FillRequest => ({
   formActionOrigin: "https://app.example.com",
   frameId: "T1",
   generation: 1,
+  formPath: "/login",
+  fieldNames: ["username", "password"],
+  redirectChain: [],
+  currentGeneration: 1,
   ...over,
 });
 
