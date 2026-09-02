@@ -96,15 +96,43 @@ export class CdpProxyServer {
 
   async #onClient(ws: WebSocket): Promise<void> {
     const clientId = randomUUID();
+
+    // Listen *before* awaiting anything.
+    //
+    // Creating the client's browser context is a round-trip to Chromium, and a
+    // framework sends its first command the instant the socket opens. Attaching
+    // the handler after the await drops everything sent in between — silently,
+    // because a lost message looks exactly like a browser that has not replied
+    // yet. That is what made Target.getTargets hang forever on a fresh
+    // connection. Queue until registration finishes, then drain in order.
+    const queued: unknown[] = [];
+    let ready = false;
+    ws.on("message", (raw) => {
+      if (ready) {
+        void this.#onMessage(ws, clientId, raw);
+      } else {
+        queued.push(raw);
+      }
+    });
+
     // Its own context by default: sharing one means a second agent inherits the
     // first's cookies and is silently logged in as it.
-    const contextId = (await this.#opts.createContext?.(clientId)) ?? `ctx-${clientId}`;
+    let contextId: string;
+    try {
+      contextId = (await this.#opts.createContext?.(clientId)) ?? `ctx-${clientId}`;
+    } catch {
+      // Without a context this client cannot be confined, and an unconfined
+      // client is worse than a refused one.
+      ws.close(1011, "could not allocate a browser context");
+      return;
+    }
 
     this.#proxy.register(clientId, contextId, (evt) => {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(evt));
     });
 
-    ws.on("message", (raw) => void this.#onMessage(ws, clientId, raw));
+    ready = true;
+    for (const raw of queued.splice(0)) void this.#onMessage(ws, clientId, raw);
     ws.on("close", () => this.#proxy.unregister(clientId));
     ws.on("error", () => this.#proxy.unregister(clientId));
   }

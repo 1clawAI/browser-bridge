@@ -51,6 +51,10 @@ export type FillEngineDeps = {
    * context the agent never sees.
    */
   readonly browserContextOf?: (targetId: string) => string | undefined;
+  /** How long to wait for the login field to render. */
+  readonly readyTimeoutMs?: number;
+  /** How long to let a submitted login finish before the page is closed. */
+  readonly submitTimeoutMs?: number;
   /**
    * Where the real failure goes.
    *
@@ -110,6 +114,7 @@ export class FillEngine {
 
       // 4. The binding's URL, not the agent's.
       await this.#send({ sessionId, method: "Page.navigate", params: { url: grant.loginUrl } });
+      const loginOrigin = await this.#currentUrl(sessionId);
 
       // 5. Navigation bumps the generation, so this catches both a page that
       //    moved on its own and one the agent moved underneath us.
@@ -117,11 +122,31 @@ export class FillEngine {
         return { status: "aborted", reason: "generation_stale" };
       }
 
+      // Wait for the field. Page.navigate resolves before the document exists,
+      // so without this the focus below runs against an empty page.
+      if (!(await this.#waitForSelector(sessionId, selector, this.#deps.readyTimeoutMs ?? 10_000))) {
+        return { status: "error", message: "the field never appeared" };
+      }
+
       handle = await backend.consumeFill(grant);
 
-      // Focus first: typing into whatever happens to hold focus is how a
-      // password ends up in a search box, or in the page's chat widget.
-      await this.#send({ sessionId, method: "DOM.querySelector", params: { selector } });
+      // Focus, properly.
+      //
+      // This was `DOM.querySelector` with only a selector — a call that needs a
+      // nodeId, returns nothing useful without one, and focuses nothing
+      // regardless. The comment beside it named the hazard exactly ("typing
+      // into whatever happens to hold focus is how a password ends up in a
+      // search box") and the code then did that: Input.insertText went to no
+      // field at all, and the form submitted with an empty password. Every unit
+      // test passed because the fake transport answers {ok:true} to anything.
+      const focused = await this.#eval(
+        sessionId,
+        `(() => { const el = document.querySelector(${JSON.stringify(selector)});
+                  if (!el) return false; el.focus(); return document.activeElement === el; })()`,
+      );
+      if (focused !== true) {
+        return { status: "error", message: "could not focus the field" };
+      }
 
       // Re-check after every await that could have yielded to a navigation.
       if (currentGeneration(targetId) !== grant.generation) {
@@ -131,6 +156,22 @@ export class FillEngine {
       // 6. Borrow, type, and let `use` zero the buffer even if this throws.
       const text = handle.use((bytes) => new TextDecoder().decode(bytes));
       await this.#send({ sessionId, method: "Input.insertText", params: { text } });
+
+      // 7. Submit.
+      //
+      // Without this the ceremony typed a password into a throwaway page and
+      // closed it, so nothing ever logged in — and it reported "filled".
+      await this.#submit(sessionId, selector);
+
+      // 8. Let the submission land before `finally` closes this page.
+      //
+      // Firing the submit and immediately destroying the target kills the
+      // request in flight: the server never sees a POST and no cookie is set.
+      // The page leaving the login URL is the signal that the request
+      // completed. A failed login also navigates — back to the form with an
+      // error — so this waits for completion, not for success. Whether the
+      // credentials were right is the agent's to discover in its own tab.
+      await this.#waitForNavigation(sessionId, loginOrigin, this.#deps.submitTimeoutMs ?? 10_000);
 
       return { status: "filled" };
     } catch (e) {
@@ -160,6 +201,87 @@ export class FillEngine {
   }
 
   /** Create the throwaway target the credential is typed into. */
+  /** The page's current URL, or "" when it cannot be read. */
+  async #currentUrl(sessionId: string): Promise<string> {
+    const v = await this.#eval(sessionId, "location.href");
+    return typeof v === "string" ? v : "";
+  }
+
+  /**
+   * Wait until the page leaves `from`, or the budget runs out.
+   *
+   * Bounded and non-fatal: a single-page login that never changes URL still
+   * completed its request, and failing the fill for that would be worse than
+   * closing a moment early.
+   */
+  async #waitForNavigation(sessionId: string, from: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const now = await this.#currentUrl(sessionId).catch(() => from);
+      if (now !== from && now !== "") return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
+  /** Poll until a selector exists, or give up. */
+  async #waitForSelector(sessionId: string, selector: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const there = await this.#eval(
+        sessionId,
+        `!!document.querySelector(${JSON.stringify(selector)})`,
+      );
+      if (there === true) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  }
+
+  /**
+   * Submit the form the field belongs to.
+   *
+   * Enter first, because that is what a person does and what most login forms
+   * handle — including single-page ones with no form element at all.
+   * `requestSubmit()` follows for forms that ignore the key, and it runs
+   * validation and fires the submit handler where `submit()` would skip both.
+   * The dataset guard stops the two paths submitting twice.
+   */
+  async #submit(sessionId: string, selector: string): Promise<void> {
+    for (const type of ["keyDown", "keyUp"] as const) {
+      await this.#send({
+        sessionId,
+        method: "Input.dispatchKeyEvent",
+        params: {
+          type,
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+          nativeVirtualKeyCode: 13,
+          ...(type === "keyDown" ? { text: "\r" } : {}),
+        },
+      });
+    }
+    await this.#eval(
+      sessionId,
+      `(() => { const el = document.querySelector(${JSON.stringify(selector)});
+                const f = el && el.form;
+                if (f && !f.dataset.oneclawSubmitted) {
+                  f.dataset.oneclawSubmitted = "1";
+                  if (f.requestSubmit) f.requestSubmit(); else f.submit();
+                }
+                return true; })()`,
+    );
+  }
+
+  async #eval(sessionId: string, expression: string): Promise<unknown> {
+    const out = (await this.#send({
+      sessionId,
+      method: "Runtime.evaluate",
+      params: { expression, returnByValue: true },
+    })) as { result?: { result?: { value?: unknown } } };
+    return out.result?.result?.value;
+  }
+
   async #createTarget(browserContextId: string | undefined): Promise<string> {
     const reply = await this.#send({
       method: "Target.createTarget",

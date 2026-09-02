@@ -8,8 +8,8 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, three backends, and governed account registration. 217 tests here,
-> twelve of them against a launched Chromium, plus the vault half.
+> toolset, three backends, and governed account registration. 218 tests here,
+> thirteen of them against a launched Chromium, plus the vault half.
 >
 > **The server side is implemented**, end to end:
 >
@@ -304,6 +304,27 @@ credential that can collect secrets without one. Scope it the way you would any
 token on a workstation, and run the bridge as a foreground process you started
 rather than a service that outlives your attention. Sessions expire after eight
 hours for the same reason.
+
+### What a fill actually does
+
+Worth being precise, because it is not "type into the page you are looking at":
+
+1. The bridge opens a **new page in your agent's own browser context** — one the
+   agent has never scripted, so nothing it installed earlier can watch the
+   typing.
+2. It navigates there using the **binding's** login URL, not anything the agent
+   supplied.
+3. It waits for the field, focuses it, types the credential, and submits.
+4. It waits for the submission to complete, then closes that page.
+5. The **session cookie stays**, because cookies belong to the browser context
+   rather than the page. Your agent's own tab is now signed in.
+
+So the agent ends up with a session it can use, and never with the password.
+`request_fill` returns `{"status":"filled"}` and nothing else.
+
+That last part only works because the throwaway page is opened in the agent's
+context. A fill in the default context logs in somewhere the agent cannot
+reach — which is what this did until it was tested end to end.
 
 ### Connecting your agent
 

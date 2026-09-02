@@ -191,9 +191,12 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
   // counters never met: every navigation bumped a key nothing read, and a grant
   // survived the navigation it existed to be invalidated by.
   const sessionTargets = new Map<string, string>();
+  /** targetId → browserContextId, so a fill lands in the agent's own context. */
+  const targetContexts = new Map<string, string>();
 
   /** Set once the proxy exists; it learns the attachments clients make. */
   let proxyTargetForSession: ((sessionId: string) => string | undefined) | undefined;
+  let proxyContextForTarget: ((targetId: string) => string | undefined) | undefined;
 
   const targetOfEvent = (evt: CdpMessage): string | undefined => {
     // The frame the event is about, when the browser names it.
@@ -209,12 +212,25 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
   // Navigation is what invalidates an authorisation, so the generation is
   // driven by the browser's own events rather than by anything the agent says.
   transport.onEvent((evt) => {
-    if (evt.method === "Target.attachedToTarget") {
+    if (evt.method === "Target.attachedToTarget" || evt.method === "Target.targetCreated") {
       const p = evt.params as
-        | { sessionId?: unknown; targetInfo?: { targetId?: unknown } }
+        | {
+            sessionId?: unknown;
+            targetInfo?: { targetId?: unknown; browserContextId?: unknown };
+          }
         | undefined;
-      if (typeof p?.sessionId === "string" && typeof p.targetInfo?.targetId === "string") {
-        sessionTargets.set(p.sessionId, p.targetInfo.targetId);
+      const info = p?.targetInfo;
+      if (typeof p?.sessionId === "string" && typeof info?.targetId === "string") {
+        sessionTargets.set(p.sessionId, info.targetId);
+      }
+      // The context a target belongs to. Needed so a fill's throwaway page is
+      // created in the *agent's* context: cookies belong to a context, not a
+      // target, so a page opened in the default context logs in somewhere the
+      // agent cannot reach. The fill engine has always asked for this and
+      // nothing ever supplied it, which made the comment promising it
+      // aspirational.
+      if (typeof info?.targetId === "string" && typeof info.browserContextId === "string") {
+        targetContexts.set(info.targetId, info.browserContextId);
       }
       return;
     }
@@ -241,6 +257,12 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
     transport,
     gate,
     currentGeneration: (t) => generations.current(t),
+    // Without this the fill's throwaway page is created in the default context
+    // and the session cookie lands where the agent can never use it.
+    // The proxy is authoritative: it placed the agent's target, so it knows the
+    // context. The event-derived map is only a fallback for targets it did not
+    // open, and needs setDiscoverTargets to be populated at all.
+    browserContextOf: (t) => proxyContextForTarget?.(t) ?? targetContexts.get(t),
     // stderr, not the tool result. The operator needs the reason; the agent
     // must not have it.
     onError: (e) => console.error("[browser-bridge] fill failed:", e),
@@ -254,6 +276,22 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
   const server = new CdpProxyServer({
     transport,
     token,
+    // Give each client a *real* Chromium browser context.
+    //
+    // Without this the proxy fell back to `ctx-${clientId}` — a string Chromium
+    // has never heard of. Two things followed. The per-client isolation this
+    // package promises did not exist, because no context was ever created. And
+    // event scoping compares Chromium's real browserContextId against the
+    // client's, so context-scoped events matched nothing and were delivered to
+    // nobody.
+    createContext: async () => {
+      const created = (await transport.send({ method: "Target.createBrowserContext" })) as {
+        result?: { browserContextId?: string };
+      };
+      const id = created.result?.browserContextId;
+      if (!id) throw new Error("Chromium would not create a browser context");
+      return id;
+    },
     ...(opts.host !== undefined ? { host: opts.host } : {}),
     ...(opts.port !== undefined ? { port: opts.port } : {}),
   });
@@ -261,6 +299,7 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
   // Now that the proxy exists, navigation events can fall back to the
   // attachments it learned from clients issuing Target.attachToTarget.
   proxyTargetForSession = (sid) => server.proxy.targetForSession(sid);
+  proxyContextForTarget = (t) => server.proxy.contextForTarget(t);
 
   const { host, port, url } = await server.listen();
 

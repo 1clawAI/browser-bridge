@@ -54,6 +54,13 @@ const ALLOWED_METHODS: ReadonlySet<string> = new Set([
   "Target.getTargets",
   "Target.getTargetInfo",
   "Target.attachToTarget",
+  // An agent has to be able to open and close its own pages, or no framework
+  // can drive this at all. Safe because the proxy places every target it opens
+  // in that client's own browser context — it cannot reach another client's
+  // pages, and it cannot choose a context, since createBrowserContext is
+  // refused outright.
+  "Target.createTarget",
+  "Target.closeTarget",
   // Network *metadata* only. Bodies are handled separately below.
   "Network.enable",
   "Network.disable",

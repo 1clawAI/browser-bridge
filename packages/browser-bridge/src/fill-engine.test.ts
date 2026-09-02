@@ -94,6 +94,7 @@ describe("ordering is the design", () => {
 
   it("has the window open while typing", async () => {
     const states: boolean[] = [];
+    let submitted = false;
     const gate = new CdpGate();
     const transport = new FakeCdpTransport();
     const spy = vi.spyOn(transport, "send").mockImplementation(async (m: CdpMessage) => {
@@ -105,6 +106,16 @@ describe("ordering is the design", () => {
       if (m.method === "Target.attachToTarget") {
         return { ...(m.id !== undefined ? { id: m.id } : {}), result: { sessionId: "s1" } };
       }
+      // And answer Runtime.evaluate the way Chromium does. A mock that returns
+      // a shape the engine cannot read is not a neutral stand-in: the engine
+      // waits on "is the field there?" and "did it focus?", and silence there
+      // is what let a fill that typed nowhere pass every test in this file.
+      if (m.method === "Runtime.evaluate") {
+        const expr = String(m.params?.expression ?? "");
+        const value = expr.includes("location.href") ? (submitted ? "u#done" : "u") : true;
+        return { ...(m.id !== undefined ? { id: m.id } : {}), result: { result: { value } } };
+      }
+      if (m.method === "Input.dispatchKeyEvent") submitted = true;
       return { ...(m.id !== undefined ? { id: m.id } : {}), result: {} };
     });
     const engine = new FillEngine({
@@ -179,6 +190,11 @@ describe("failure paths", () => {
       }
       if (m.method === "Target.attachToTarget") {
         return { ...(m.id !== undefined ? { id: m.id } : {}), result: { sessionId: "s1" } };
+      }
+      // The engine probes for the field and for focus before it types; without
+      // an answer it waits rather than reaching the throw this test is about.
+      if (m.method === "Runtime.evaluate") {
+        return { ...(m.id !== undefined ? { id: m.id } : {}), result: { result: { value: true } } };
       }
       return { ...(m.id !== undefined ? { id: m.id } : {}), result: {} };
     });

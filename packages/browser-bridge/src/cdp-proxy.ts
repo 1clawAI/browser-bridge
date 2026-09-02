@@ -54,6 +54,14 @@ export class CdpProxy {
    */
   readonly #sessionTargets = new Map<string, string>();
   /**
+   * targetId → the browser context it lives in.
+   *
+   * Recorded when the proxy places a target, so a fill can open its throwaway
+   * page in the *same* context: cookies belong to a context, not a page, and a
+   * session that lands in the default context is one the agent can never use.
+   */
+  readonly #targetContexts = new Map<string, string>();
+  /**
    * sessionId → the client that attached it.
    *
    * Event delivery was `for (const [, sink] of this.#sinks) sink(evt)` — an
@@ -108,6 +116,11 @@ export class CdpProxy {
     return this.#sessionTargets.get(sessionId);
   }
 
+  /** The browser context a target was opened in, if this proxy opened it. */
+  contextForTarget(targetId: string): string | undefined {
+    return this.#targetContexts.get(targetId);
+  }
+
   /**
    * Handle one command from a client.
    *
@@ -136,7 +149,47 @@ export class CdpProxy {
       return this.#refuse(msg, `${decision.reason}: ${decision.message}`);
     }
 
-    const result = await this.#transport.send(msg);
+    // A target the agent opens belongs in the agent's context.
+    //
+    // Chromium puts it in the default context otherwise, which quietly undoes
+    // the confinement: two clients would share cookies, and the fill's session
+    // would land somewhere its own agent cannot reach. The agent cannot choose
+    // a context itself — Target.createBrowserContext is refused — so filling it
+    // in here is the only way it is ever right.
+    const outbound =
+      msg.method === "Target.createTarget" && this.#contexts.has(clientId)
+        ? {
+            ...msg,
+            params: {
+              ...(msg.params ?? {}),
+              browserContextId: this.#contexts.get(clientId),
+            },
+          }
+        : msg;
+
+    // Strip the agent's id before forwarding, and put it back on the reply.
+    //
+    // The transport reuses an incoming id when one is present, so an agent's
+    // `id: 1` collided with the bridge's own internal id 1 — the reply was
+    // matched to whichever pending entry got there first. The visible symptom
+    // was Target.getTargets hanging forever on a fresh connection. The
+    // invisible one is worse: two clients both counting from 1 would receive
+    // each other's replies, which is exactly the confinement this class exists
+    // to keep.
+    const { id: clientMessageId, ...withoutId } = outbound;
+    const forwarded = await this.#transport.send(withoutId);
+    const result: CdpMessage =
+      clientMessageId !== undefined ? { ...forwarded, id: clientMessageId } : forwarded;
+    // Remember which context this target went into. We know it exactly — we put
+    // it there — so there is no need to infer it from Target.targetCreated
+    // events, which only arrive if setDiscoverTargets is on, and it is not.
+    if (msg.method === "Target.createTarget") {
+      const created = (result.result as { targetId?: unknown } | undefined)?.targetId;
+      const ctx = this.#contexts.get(clientId);
+      if (typeof created === "string" && ctx !== undefined) {
+        this.#targetContexts.set(created, ctx);
+      }
+    }
     this.#learnSession(clientId, msg, result);
     return { kind: "forward", message: result };
   }

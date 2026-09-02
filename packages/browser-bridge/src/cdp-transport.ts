@@ -41,6 +41,12 @@ export class FakeCdpTransport implements CdpTransport {
 
   /** targetId → the session this fake handed out for it. */
   readonly sessions = new Map<string, string>();
+  /** What Runtime.evaluate returns for non-URL expressions. */
+  evaluateValue: unknown = true;
+  /** The page's current URL, as the fake reports it. */
+  url = "about:blank";
+  /** Set once a key event has been dispatched, so the URL appears to change. */
+  submitted = false;
 
   async send(msg: CdpMessage): Promise<CdpMessage> {
     this.sent.push(msg);
@@ -64,6 +70,33 @@ export class FakeCdpTransport implements CdpTransport {
       const sessionId = `session-for-${target}`;
       this.sessions.set(target, sessionId);
       return { ...base, result: { sessionId } };
+    }
+
+    // Runtime.evaluate is answered like Chromium answers it.
+    //
+    // This used to fall through to `{ok: true}` along with everything else,
+    // and that is how a broken fill ceremony passed every test: the engine
+    // asked "is the field there?" and "did it focus?" and got a shape it could
+    // not read, which it treated as neither yes nor no. A double that answers
+    // a protocol nobody implements verifies nothing about the protocol.
+    if (msg.method === "Runtime.evaluate") {
+      const expression = String(msg.params?.expression ?? "");
+      // The page "navigates" once something has been submitted, so a caller
+      // waiting for the URL to change is not left polling forever.
+      if (expression.includes("location.href")) {
+        return {
+          ...base,
+          result: { result: { value: this.submitted ? `${this.url}#done` : this.url } },
+        };
+      }
+      // Selector probes and focus checks succeed by default; a test that needs
+      // a missing field sets `evaluateValue`.
+      return { ...base, result: { result: { value: this.evaluateValue } } };
+    }
+
+    if (msg.method === "Input.dispatchKeyEvent") {
+      this.submitted = true;
+      return { ...base, result: {} };
     }
 
     return { ...base, result: { ok: true } };
