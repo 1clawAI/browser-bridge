@@ -137,6 +137,46 @@ describe("the assembled bridge", () => {
     expect(transport.sent.filter((m) => m.method === "Input.insertText")).toHaveLength(0);
   });
 
+  it("opens a session on the backend and uses the id it returns", async () => {
+    // The core used to invent `randomBytes(12)` as a session id and never call
+    // openSession at all. Every driver implemented it; nothing called it. The
+    // saas driver therefore never held a session token and consumeFill threw,
+    // and the mock refused every fill as session_expired — the entire client
+    // path was broken for both backends, hidden because the end-to-end tests
+    // drove the vault's HTTP API instead of going through the bridge.
+    const opened: string[] = [];
+    const closed: string[] = [];
+    const back = backend() as unknown as Record<string, unknown>;
+    back.openSession = async (ctx: { clientId: string }) => {
+      opened.push(ctx.clientId);
+      return { id: "session-from-backend", createdAt: "", expiresAt: "" };
+    };
+    back.closeSession = async (id: string) => void closed.push(id);
+    let seen = "";
+    back.authorizeFill = async (r: { sessionId: string }) => {
+      seen = r.sessionId;
+      return { kind: "grant", ...GRANT };
+    };
+
+    bridge = await startBridge({
+      executablePath: "/nonexistent",
+      host: "127.0.0.1",
+      port: 0,
+      transport: new FakeCdpTransport(),
+      backend: back as never,
+    });
+    expect(opened).toHaveLength(1);
+
+    await bridge.callTool("request_fill", FILL_ARGS, observed());
+    // The id the backend issued, not one the core made up.
+    expect(seen).toBe("session-from-backend");
+
+    await bridge.close();
+    bridge = undefined;
+    // And the backend is told, rather than left to time the session out.
+    expect(closed).toEqual(["session-from-backend"]);
+  });
+
   it("closes the transport when the bridge closes", async () => {
     const transport = new FakeCdpTransport();
     const { bridge: b } = await start(transport);

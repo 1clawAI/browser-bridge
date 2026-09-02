@@ -17,4 +17,11 @@ export { buildToolset, dispatchTool, type ToolDefinition, type ToolResult } from
 export { FillEngine, type FillEngineDeps, type FillOutcome } from "./fill-engine.js";
 export { CAPABILITY_TOOLS, toolsFor, type VaultBackend } from "./vault-backend.js";
 export { SaasDriver, type SaasDriverOptions } from "./drivers/saas.js";
+// In-memory, no account required — so this package can be run by someone who
+// has not signed up for anything. Not for production; see its module doc.
+export {
+  MockVaultDriver,
+  type MockVaultDriverOptions,
+  type MockBinding,
+} from "./drivers/mock.js";
 export * from "@1claw/browser-bridge-protocol";

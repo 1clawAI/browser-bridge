@@ -8,7 +8,7 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset. 161 tests here, three of them against a launched Chromium, plus
+> toolset. 176 tests here, three of them against a launched Chromium, plus
 > the vault half.
 >
 > **Not built:** the community driver — see [Roadmap](#roadmap).
@@ -230,6 +230,15 @@ rejecting only cross-site `Origin`s.
 
 - **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks + Chromium pipe transport + per-client `BrowserContext` + MCP stdio + the composition root and `1claw-browser-bridge` bin. Vault side: device pairing and revocation, binding CRUD with form fingerprints, sessions, fill authorisation and single-use grant consumption. Adversarial suite, and three tests against a real Chromium.
 - **OSS launch** — the gate was the adversarial harness passing against the saas driver. It does, and the vault half is implemented rather than flagged off, so the client is exercised end to end today (30 assertions against production). Form-action and fingerprint checks are done. What remains is a **mock-vault** so someone without a 1Claw account can run the thing — a real gap for a public repo, since the only backend that exists talks to an API they cannot reach.
+
+  **Done.** `MockVaultDriver` is an in-memory backend, and
+  `examples/demo.mjs` runs the whole thing with no account: a local login form,
+  a real Chromium, and the agent's tool result printed so you can check the
+  password is not in it.
+
+  ```bash
+  pnpm install && pnpm build && node packages/browser-bridge/examples/demo.mjs
+  ```
 
   The community driver is *not* a launch blocker. It raises the bar rather than delays it: the adversarial suite must be green on every shipped driver, and only the saas driver ships. An earlier version of this list said otherwise and contradicted the note above.
 - **v0.2** — governed credential registration, HITL approval queue, TOTP fill

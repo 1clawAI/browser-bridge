@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomBytes } from "node:crypto";
+import { PROTOCOL_VERSION } from "@1claw/browser-bridge-protocol";
 
 import { CdpGate } from "./cdp-policy.js";
 import type { CdpMessage, CdpTransport } from "./cdp-transport.js";
@@ -76,6 +77,14 @@ export type BridgeHandle = {
   ): Promise<ToolResult>;
   close(): Promise<void>;
 };
+
+/**
+ * What this build reports to a backend.
+ *
+ * The hosted vault refuses bridges below a minimum, so this has to be a real
+ * value rather than "unknown" — a version it cannot parse is turned away.
+ */
+const BRIDGE_VERSION = "0.1.0";
 
 /** Bumped by navigation; the fill re-checks it immediately before typing. */
 class Generations {
@@ -176,7 +185,26 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
   proxyTargetForSession = (sid) => server.proxy.targetForSession(sid);
 
   const { host, port, url } = await server.listen();
-  const sessionId = randomBytes(12).toString("hex");
+
+  // Open a session on the backend, and use the id it returns.
+  //
+  // This used to be `randomBytes(12).toString("hex")` — an id the core invented
+  // and no backend had ever heard of. `openSession` was declared on
+  // `VaultBackend` and implemented by every driver, and nothing called it. The
+  // saas driver therefore never held a session token, so `consumeFill` threw
+  // "no open browser session"; the mock refuses every fill as `session_expired`.
+  // The whole client path was broken for both, and stayed hidden because the
+  // end-to-end tests drove the vault's HTTP API directly rather than going
+  // through the bridge.
+  //
+  // If the backend cannot open a session, that is fatal here rather than at the
+  // first fill: a bridge that has listened and printed a URL looks ready.
+  const session = await backend.openSession({
+    clientId: randomBytes(12).toString("hex"),
+    bridgeVersion: BRIDGE_VERSION,
+    protocolVersion: PROTOCOL_VERSION,
+  });
+  const sessionId = session.id;
 
   return {
     url,
@@ -232,6 +260,9 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
     },
 
     async close() {
+      // Tell the backend before tearing the transport down, so a hosted vault
+      // marks the session closed rather than waiting out its TTL.
+      await backend.closeSession(sessionId).catch(() => {});
       await server.close();
       await transport.close();
     },
