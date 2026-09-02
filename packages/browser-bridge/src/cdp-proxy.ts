@@ -61,6 +61,10 @@ export class CdpProxy {
    * session that lands in the default context is one the agent can never use.
    */
   readonly #targetContexts = new Map<string, string>();
+  /** Clients that asked for target discovery, answered locally. */
+  readonly #discovering = new Set<ClientId>();
+  /** Clients that asked to auto-attach, answered locally. */
+  readonly #autoAttaching = new Set<ClientId>();
   /**
    * sessionId → the client that attached it.
    *
@@ -90,6 +94,8 @@ export class CdpProxy {
   }
 
   unregister(clientId: ClientId): void {
+    this.#discovering.delete(clientId);
+    this.#autoAttaching.delete(clientId);
     this.#contexts.delete(clientId);
     this.#sinks.delete(clientId);
     // Otherwise a later client could inherit a departed client's sessions.
@@ -135,6 +141,22 @@ export class CdpProxy {
     if (!msg.method) {
       return this.#refuse(msg, "malformed command: no method");
     }
+
+    // Answer the framework attach handshake here rather than forwarding it.
+    //
+    // Puppeteer and Playwright open a connection by asking the browser to
+    // describe itself and to start announcing targets. Forwarded, those
+    // commands would put Chromium into a mode where it reports *every* target
+    // to whoever asked — including other clients' pages — which is why
+    // setAutoAttach and setDiscoverTargets are in NEVER_ALLOWED and must stay
+    // there. Answered locally, the client gets the handshake it needs and a
+    // view containing only its own targets.
+    //
+    // Nothing synthesised here names a target the client does not own; that is
+    // the property the tests hold, because a discovery reply that leaked one
+    // would be a way back to an ungated page.
+    const handled = await this.#answerHandshake(clientId, msg);
+    if (handled) return handled;
 
     const targetId = this.#targetOf(msg);
     const decision: CdpDecision = this.#gate.evaluateCommand({
@@ -188,6 +210,36 @@ export class CdpProxy {
       const ctx = this.#contexts.get(clientId);
       if (typeof created === "string" && ctx !== undefined) {
         this.#targetContexts.set(created, ctx);
+        // Tell this client — and only this client — that its page exists. A
+        // framework that asked for discovery is waiting for exactly this before
+        // it will consider the page usable.
+        if (this.#discovering.has(clientId)) {
+          this.#sinks.get(clientId)?.({
+            method: "Target.targetCreated",
+            params: {
+              targetInfo: {
+                targetId: created,
+                type: "page",
+                title: "",
+                url: typeof msg.params?.url === "string" ? msg.params.url : "",
+                attached: false,
+                browserContextId: ctx,
+              },
+            },
+          });
+        }
+      }
+    }
+    if (msg.method === "Target.closeTarget") {
+      const closed = msg.params?.targetId;
+      if (typeof closed === "string" && this.#targetContexts.get(closed) === this.#contexts.get(clientId)) {
+        this.#targetContexts.delete(closed);
+        if (this.#discovering.has(clientId)) {
+          this.#sinks.get(clientId)?.({
+            method: "Target.targetDestroyed",
+            params: { targetId: closed },
+          });
+        }
       }
     }
     this.#learnSession(clientId, msg, result);
@@ -202,6 +254,71 @@ export class CdpProxy {
    * (Target.closeTarget, Target.attachToTarget itself). Checking both is what
    * makes the fill window cover the methods that can read the field.
    */
+  /**
+   * Reply to the commands a stock CDP client sends on connect.
+   *
+   * Returns a reply when it handled the command, or undefined to let it
+   * continue to the gate and the browser.
+   */
+  async #answerHandshake(clientId: ClientId, msg: CdpMessage): Promise<ProxyReply | undefined> {
+    const id = msg.id;
+    const ok = (result: Record<string, unknown>): ProxyReply => ({
+      kind: "forward",
+      message: { ...(id !== undefined ? { id } : {}), result },
+    });
+
+    switch (msg.method) {
+      case "Browser.getVersion": {
+        // Forwarded, because it is honest and leaks nothing: version strings
+        // only. Browser.getBrowserCommandLine, which *would* leak (flags
+        // include --user-data-dir), stays refused.
+        const real = await this.#transport.send({ method: "Browser.getVersion" });
+        return ok((real.result as Record<string, unknown>) ?? {});
+      }
+
+      case "Target.setDiscoverTargets": {
+        // Accepted, not forwarded. The client is told about its own targets
+        // and nothing else; Chromium is never put into global discovery.
+        this.#discovering.add(clientId);
+        const reply = ok({});
+        if (msg.params?.discover === true) {
+          // Announce what it already has, as Chromium would on enabling
+          // discovery, so a client that connects after opening a page is not
+          // left believing the browser is empty.
+          for (const [targetId, ctx] of this.#targetContexts) {
+            if (ctx !== this.#contexts.get(clientId)) continue;
+            this.#sinks.get(clientId)?.({
+              method: "Target.targetCreated",
+              params: {
+                targetInfo: {
+                  targetId,
+                  type: "page",
+                  title: "",
+                  url: "",
+                  attached: false,
+                  browserContextId: ctx,
+                },
+              },
+            });
+          }
+        }
+        return reply;
+      }
+
+      case "Target.setAutoAttach":
+        // Accepted and remembered. Forwarding would have Chromium attach the
+        // browser-level session to targets as they appear, handing the client
+        // sessions it never asked for — including, eventually, ones in another
+        // client's context.
+        if (msg.params?.autoAttach === true) this.#autoAttaching.add(clientId);
+        else this.#autoAttaching.delete(clientId);
+        return ok({});
+
+      default:
+        return undefined;
+    }
+  }
+
   #targetOf(msg: CdpMessage): string | undefined {
     if (typeof msg.sessionId === "string") {
       const mapped = this.#sessionTargets.get(msg.sessionId);
@@ -269,8 +386,18 @@ export class CdpProxy {
 
     // Browser-level events may name the context they concern; deliver only to
     // clients confined to it.
+    //
+    // Target.* events carry it under `targetInfo`, not at the top level, so
+    // reading only the top level let every target event fall past this and into
+    // the global broadcast below — the opposite of confinement, and the reason
+    // a client could have seen another client's pages appear.
+    const info = evt.params?.targetInfo as { browserContextId?: unknown } | undefined;
     const ctx =
-      typeof evt.params?.browserContextId === "string" ? evt.params.browserContextId : undefined;
+      typeof evt.params?.browserContextId === "string"
+        ? evt.params.browserContextId
+        : typeof info?.browserContextId === "string"
+          ? info.browserContextId
+          : undefined;
     if (ctx !== undefined) {
       for (const [clientId, sink] of this.#sinks) {
         if (this.#contexts.get(clientId) === ctx) sink(evt);

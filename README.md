@@ -8,7 +8,7 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, three backends, and governed account registration. 218 tests here,
+> toolset, three backends, and governed account registration. 227 tests here,
 > thirteen of them against a launched Chromium, plus the vault half.
 >
 > **The server side is implemented**, end to end:
@@ -330,6 +330,25 @@ reach — which is what this did until it was tested end to end.
 
 Point your framework's `cdp_url` at the URL the bridge prints. Every command
 crosses the gate; nothing else is attached to Chromium.
+
+**Stock clients work.** Puppeteer and Playwright open a connection by asking the
+browser to describe itself and to start announcing targets — and for a while
+they could not connect at all, because the second half of that handshake is
+refused by design: forwarding `Target.setAutoAttach` or `setDiscoverTargets`
+puts Chromium into a mode where it reports *every* target to whoever asked.
+
+The proxy now answers that handshake itself. The client gets the replies and
+the target events it needs, and the view it is given contains only its own
+pages. Those commands are still never forwarded, so Chromium is never put into
+global discovery.
+
+```js
+await puppeteer.connect({ browserWSEndpoint: bridge.url });
+await chromium.connectOverCDP(bridge.url);
+```
+
+`examples/agent.mjs` shows the minimal client if you would rather speak gated
+CDP directly.
 
 ### Loopback
 
