@@ -66,12 +66,47 @@ export type RegistrationPolicy = {
   readonly loginUrl: string;
 };
 
+/**
+ * Permission for an agent to capture a site-generated secret, authored by a
+ * human. The agent supplies only the `id`; everything that decides what gets
+ * read and stored is here.
+ *
+ * `allowedHosts` is the binding the captured secret is written under, so a
+ * capture and any later fill of the same credential are governed by one rule.
+ */
+export type CapturePolicy = {
+  readonly id: string;
+  /** The page where the secret is generated and shown. */
+  readonly captureUrl: string;
+  readonly allowedHosts: readonly string[];
+  /** A control the bridge clicks to make the secret appear. Omit if already shown. */
+  readonly generateSelector?: string;
+  /** Where the value is read from once it exists. */
+  readonly valueSelector: string;
+  /** Read `.value` or `.textContent`; omit to take whichever is non-empty. */
+  readonly valueProp?: "value" | "textContent";
+  /** Read a named attribute instead (e.g. `data-clipboard-text`); wins over valueProp. */
+  readonly valueAttr?: string;
+  /** Vault id the captured secret is written under. Defaults to `id`. */
+  readonly entryId?: string;
+  /** Login URL recorded on the resulting entry, so a later fill is governed too. */
+  readonly loginUrl: string;
+};
+
 export type VaultEntry = {
   readonly id: string;
   readonly secret: string;
   readonly loginUrl: string;
   readonly allowedHosts: readonly string[];
   readonly ssoHosts?: readonly string[];
+  /**
+   * A username to type before the password, for login forms that do not
+   * pre-fill it. Not a secret. Both must be present to be used.
+   */
+  readonly username?: string;
+  readonly usernameSelector?: string;
+  /** A submit button to click, for forms that need the button's own click. */
+  readonly submitSelector?: string;
 };
 
 /**
@@ -83,7 +118,14 @@ export type VaultEntry = {
  */
 export type VaultContents = {
   readonly entries: VaultEntry[];
-  readonly registrations: RegistrationPolicy[];
+  /**
+   * Optional, because `sealVault` already defaults both to `[]` — a vault with
+   * no registration policies and no capture policies is the ordinary case, and
+   * requiring the keys makes every existing caller pass `captures: []` to say
+   * nothing. The type should describe what the function accepts.
+   */
+  readonly registrations?: RegistrationPolicy[];
+  readonly captures?: CapturePolicy[];
 };
 
 /** The on-disk shape. Everything outside `ciphertext` is public by design. */
@@ -131,10 +173,11 @@ export async function sealVault(
   passphrase: string,
 ): Promise<VaultFile> {
   const doc: VaultContents = Array.isArray(contents)
-    ? { entries: [...(contents as readonly VaultEntry[])], registrations: [] }
+    ? { entries: [...(contents as readonly VaultEntry[])], registrations: [], captures: [] }
     : {
         entries: [...(contents as VaultContents).entries],
         registrations: [...((contents as VaultContents).registrations ?? [])],
+        captures: [...((contents as VaultContents).captures ?? [])],
       };
   if (passphrase.length < 12) {
     // The file's only defence. A short passphrase makes the scrypt cost moot.
@@ -180,10 +223,11 @@ export async function openVault(file: VaultFile, passphrase: string): Promise<Va
     plain.fill(0);
     // A v1 file is a bare array. Normalise rather than migrate.
     return Array.isArray(parsed)
-      ? { entries: parsed as VaultEntry[], registrations: [] }
+      ? { entries: parsed as VaultEntry[], registrations: [], captures: [] }
       : {
           entries: (parsed as VaultContents).entries ?? [],
           registrations: (parsed as VaultContents).registrations ?? [],
+          captures: (parsed as VaultContents).captures ?? [],
         };
   } catch {
     // One message for a wrong passphrase and for a tampered file. Telling them

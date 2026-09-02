@@ -8,8 +8,8 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, three backends, and governed account registration. 254 tests here,
-> eighteen of them against a launched Chromium, two of those driving real Puppeteer and Playwright, plus the vault half.
+> toolset, three backends, and governed account registration. 266 tests here,
+> twenty of them against a launched Chromium, two of those driving real Puppeteer and Playwright, plus the vault half.
 >
 > **The server side is implemented**, end to end:
 >
@@ -446,7 +446,7 @@ rejecting only cross-site `Origin`s.
   ```
 
   The community driver has landed too: `LocalVaultDriver`, an AES-256-GCM file keyed by scrypt from a passphrase you hold, with `1claw-vault` to manage it. Three backends now ship, and the adversarial suite is green on all of them — which was always the real bar.
-- **v0.2** — governed credential registration **(done, local backend)**; HITL approval queue, TOTP fill, and registration on the hosted backend still to come
+- **v0.2** — governed credential registration **(done, local backend)** and governed credential **capture** — a fill in reverse: while logged in, the bridge reads a secret the site generates (an API key, a token) in a windowed page and stores it in the vault, without the agent seeing it **(done, local backend; see `examples/full-flow-capture.mjs`)**; HITL approval queue, TOTP fill, and both on the hosted backend still to come
 - **v0.3** — cloud-runtime sidecar (platform trust model)
 
 ## Security

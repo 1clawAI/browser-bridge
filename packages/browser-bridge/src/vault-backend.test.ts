@@ -7,12 +7,12 @@ import { CAPABILITY_TOOLS, toolsFor } from "./vault-backend.js";
 import { SaasDriver } from "./drivers/saas.js";
 
 const SAAS: Capabilities = {
-  fills: true, registration: false, checkout: true, signing: true,
+  fills: true, registration: false, capture: false, checkout: true, signing: true,
   hitl: true, centralAudit: true, shadowReports: true,
 };
 
 const COMMUNITY: Capabilities = {
-  fills: true, registration: false, checkout: false, signing: false,
+  fills: true, registration: false, capture: false, checkout: false, signing: false,
   hitl: false, centralAudit: false, shadowReports: false,
 };
 

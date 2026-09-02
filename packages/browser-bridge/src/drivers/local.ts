@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import type {
   AuditEvent,
+  CaptureDecision,
+  CaptureRequest,
   RegistrationDecision,
   RegistrationRequest,
   Capabilities,
@@ -22,6 +24,7 @@ import type { VaultBackend } from "../vault-backend.js";
 import {
   openVault,
   sealVault,
+  type CapturePolicy,
   type RegistrationPolicy,
   type VaultContents,
   type VaultEntry,
@@ -74,6 +77,8 @@ export class LocalVaultDriver implements VaultBackend {
   #index = new Map<string, Omit<VaultEntry, "secret">>();
   /** Human-authored permission to create accounts. Never written by an agent. */
   #registrations = new Map<string, RegistrationPolicy>();
+  /** Human-authored permission to capture a site-generated secret. */
+  #captures = new Map<string, CapturePolicy>();
   readonly #grants = new Map<
     string,
     { entryId: string; generation: number; expiresAt: number }
@@ -86,6 +91,8 @@ export class LocalVaultDriver implements VaultBackend {
     string,
     { siteId: string; password: string; expiresAt: number }
   >();
+  /** In-flight captures: which policy a captureId is redeeming. */
+  readonly #pendingCaptures = new Map<string, { policyId: string; expiresAt: number }>();
 
   constructor(opts: LocalVaultDriverOptions) {
     this.#opts = opts;
@@ -101,8 +108,11 @@ export class LocalVaultDriver implements VaultBackend {
    * browser and believes the thing is working.
    */
   async open(): Promise<void> {
-    const { entries, registrations } = await this.#decrypt();
-    this.#registrations = new Map(registrations.map((r) => [r.id, r]));
+    const { entries, registrations, captures } = await this.#decrypt();
+    // Both default to empty: a vault with no registration or capture policies
+    // is the ordinary case, and the file format does not require the keys.
+    this.#registrations = new Map((registrations ?? []).map((r) => [r.id, r]));
+    this.#captures = new Map((captures ?? []).map((c) => [c.id, c]));
     this.#index = new Map(
       entries.map((e) => [
         e.id,
@@ -111,6 +121,9 @@ export class LocalVaultDriver implements VaultBackend {
           loginUrl: e.loginUrl,
           allowedHosts: e.allowedHosts,
           ...(e.ssoHosts ? { ssoHosts: e.ssoHosts } : {}),
+          ...(e.username ? { username: e.username } : {}),
+          ...(e.usernameSelector ? { usernameSelector: e.usernameSelector } : {}),
+          ...(e.submitSelector ? { submitSelector: e.submitSelector } : {}),
         },
       ]),
     );
@@ -126,6 +139,9 @@ export class LocalVaultDriver implements VaultBackend {
       // backend with none should not advertise the tool: an agent that can see
       // it will call it, and be refused for a reason it cannot act on.
       registration: this.#registrations.size > 0,
+      // Same rule as registration: advertised only when a human has authored a
+      // policy, so an agent never sees a tool it would only be refused on.
+      capture: this.#captures.size > 0,
       checkout: false,
       signing: false,
       hitl: false,
@@ -196,6 +212,9 @@ export class LocalVaultDriver implements VaultBackend {
       loginUrl: entry.loginUrl,
       expiresAt: new Date(now + this.#grantTtlMs).toISOString(),
       generation: req.generation,
+      ...(entry.username ? { username: entry.username } : {}),
+      ...(entry.usernameSelector ? { usernameSelector: entry.usernameSelector } : {}),
+      ...(entry.submitSelector ? { submitSelector: entry.submitSelector } : {}),
     };
   }
 
@@ -329,6 +348,89 @@ export class LocalVaultDriver implements VaultBackend {
   /** Discard a registration. The generated password is never written. */
   async cancelRegistration(registrationId: string): Promise<void> {
     this.#pending.delete(registrationId);
+  }
+
+  /**
+   * Begin one capture.
+   *
+   * The agent names a pre-authorised site and nothing else. Where the value is
+   * read from, and the id it is stored under, come from the policy a human
+   * wrote. No secret is returned — it does not exist yet, and when it does the
+   * engine hands it to `commitCapture`, never back to the agent.
+   */
+  async beginCapture(req: CaptureRequest): Promise<CaptureDecision> {
+    const policy = this.#captures.get(req.siteId);
+    // Same answer as "not allowed": which sites are pre-authorised is not
+    // something an agent gets to enumerate by probing ids.
+    if (!policy) {
+      return { kind: "denied", reason: "policy_denied", message: "not permitted" };
+    }
+    if (!this.#session) {
+      return { kind: "denied", reason: "session_expired", message: "no open session" };
+    }
+    if ([...this.#pendingCaptures.values()].some((p) => p.policyId === policy.id)) {
+      return { kind: "denied", reason: "fill_in_progress", message: "already capturing" };
+    }
+
+    const captureId = randomUUID();
+    this.#pendingCaptures.set(captureId, { policyId: policy.id, expiresAt: Date.now() + 5 * 60 * 1000 });
+
+    return {
+      kind: "capture_grant",
+      captureId,
+      captureUrl: policy.captureUrl,
+      source: {
+        ...(policy.generateSelector ? { generateSelector: policy.generateSelector } : {}),
+        valueSelector: policy.valueSelector,
+        ...(policy.valueProp ? { valueProp: policy.valueProp } : {}),
+        ...(policy.valueAttr ? { valueAttr: policy.valueAttr } : {}),
+      },
+      entryId: policy.entryId ?? policy.id,
+    };
+  }
+
+  /**
+   * Store the captured secret, now that the bridge has read it off the page.
+   *
+   * The value came in from the engine, not the vault, so this is where a
+   * captured secret first touches disk. Consumes the handle: it is read once,
+   * under the same passphrase the rest of the file uses, and the buffer is
+   * zeroed.
+   */
+  async commitCapture(captureId: string, secret: SecretHandle): Promise<{ entryId: string }> {
+    const pending = this.#pendingCaptures.get(captureId);
+    if (!pending) throw new Error("no such capture");
+    const policy = this.#captures.get(pending.policyId);
+    if (!policy) throw new Error("capture policy has gone");
+    const entryId = policy.entryId ?? policy.id;
+
+    const contents = await this.#decrypt();
+    if (contents.entries.some((e) => e.id === entryId)) {
+      this.#pendingCaptures.delete(captureId);
+      throw new Error(`a credential for ${entryId} already exists; remove it first`);
+    }
+    // Read the handle only once we are committed to storing it.
+    const value = secret.use((b) => new TextDecoder().decode(b));
+    contents.entries.push({
+      id: entryId,
+      secret: value,
+      loginUrl: policy.loginUrl,
+      allowedHosts: policy.allowedHosts,
+    });
+    await this.#write(contents);
+
+    this.#pendingCaptures.delete(captureId);
+    this.#index.set(entryId, {
+      id: entryId,
+      loginUrl: policy.loginUrl,
+      allowedHosts: policy.allowedHosts,
+    });
+    return { entryId };
+  }
+
+  /** Discard a capture. Nothing is written. */
+  async cancelCapture(captureId: string): Promise<void> {
+    this.#pendingCaptures.delete(captureId);
   }
 
   async audit(event: AuditEvent): Promise<void> {

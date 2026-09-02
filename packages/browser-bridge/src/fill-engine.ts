@@ -122,6 +122,19 @@ export class FillEngine {
         return { status: "aborted", reason: "generation_stale" };
       }
 
+      // Username first, when the binding carries one. Many real login forms do
+      // not pre-fill it, and a form submitted with only a password fails. Not a
+      // secret, so it is typed plainly — but by the bridge in this windowed
+      // page, so the agent still never scripts the login.
+      if (grant.usernameSelector && grant.username) {
+        if (!(await this.#typeInto(sessionId, grant.usernameSelector, grant.username))) {
+          return { status: "error", message: "the username field never appeared" };
+        }
+        if (currentGeneration(targetId) !== grant.generation) {
+          return { status: "aborted", reason: "navigated" };
+        }
+      }
+
       // Wait for the field. Page.navigate resolves before the document exists,
       // so without this the focus below runs against an empty page.
       if (!(await this.#waitForSelector(sessionId, selector, this.#deps.readyTimeoutMs ?? 10_000))) {
@@ -161,7 +174,7 @@ export class FillEngine {
       //
       // Without this the ceremony typed a password into a throwaway page and
       // closed it, so nothing ever logged in — and it reported "filled".
-      await this.#submit(sessionId, selector);
+      await this.#submit(sessionId, selector, grant.submitSelector);
 
       // 8. Let the submission land before `finally` closes this page.
       //
@@ -223,6 +236,21 @@ export class FillEngine {
     }
   }
 
+  /** Type a non-secret value into a field: wait for it, focus it, type. */
+  async #typeInto(sessionId: string, selector: string, value: string): Promise<boolean> {
+    if (!(await this.#waitForSelector(sessionId, selector, this.#deps.readyTimeoutMs ?? 10_000))) {
+      return false;
+    }
+    const focused = await this.#eval(
+      sessionId,
+      `(() => { const el = document.querySelector(${JSON.stringify(selector)});
+                if (!el) return false; el.focus(); return document.activeElement === el; })()`,
+    );
+    if (focused !== true) return false;
+    await this.#send({ sessionId, method: "Input.insertText", params: { text: value } });
+    return true;
+  }
+
   /** Poll until a selector exists, or give up. */
   async #waitForSelector(sessionId: string, selector: string, timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
@@ -246,7 +274,19 @@ export class FillEngine {
    * validation and fires the submit handler where `submit()` would skip both.
    * The dataset guard stops the two paths submitting twice.
    */
-  async #submit(sessionId: string, selector: string): Promise<void> {
+  async #submit(sessionId: string, selector: string, submitSelector?: string): Promise<void> {
+    // A named submit button is the reliable path for forms that need the
+    // button's own click — an ASP.NET WebForms login posts back through the
+    // button, and a bare form.submit() omits it and never authenticates. Click
+    // it and stop; fall through to the generic path only if it is not there.
+    if (submitSelector) {
+      const clicked = await this.#eval(
+        sessionId,
+        `(() => { const b = document.querySelector(${JSON.stringify(submitSelector)});
+                  if (!b) return false; b.click(); return true; })()`,
+      );
+      if (clicked === true) return;
+    }
     for (const type of ["keyDown", "keyUp"] as const) {
       await this.#send({
         sessionId,

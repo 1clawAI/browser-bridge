@@ -46,7 +46,7 @@ const req = (over: Partial<FillRequest> = {}): FillRequest => ({
 describe("the vault file", () => {
   it("round-trips through seal and open", async () => {
     const file = await sealVault([ENTRY], PASSPHRASE);
-    expect(await openVault(file, PASSPHRASE)).toEqual({ entries: [ENTRY], registrations: [] });
+    expect(await openVault(file, PASSPHRASE)).toEqual({ entries: [ENTRY], registrations: [], captures: [] });
   }, SLOW);
 
   it("still reads a v1 file, which held a bare array", async () => {

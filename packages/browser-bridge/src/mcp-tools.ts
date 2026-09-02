@@ -45,6 +45,8 @@ export type ToolResult =
   | { readonly status: "aborted"; readonly reason: string }
   /** An account now exists and its credential is in the vault. Never a password. */
   | { readonly status: "registered"; readonly bindingId: string }
+  /** A site-generated secret was read and stored in the vault. Never the secret. */
+  | { readonly status: "captured"; readonly entryId: string }
   /** The site did not accept it, or did not say so. Nothing was stored. */
   | { readonly status: "rejected"; readonly reason: string }
   | { readonly status: "error"; readonly message: string };
@@ -81,6 +83,23 @@ const SCHEMAS: Record<string, Readonly<Record<string, unknown>>> = {
     // set to redirect where the credential ends up.
     additionalProperties: false,
   },
+  begin_credential_capture: {
+    type: "object",
+    properties: {
+      site_id: {
+        type: "string",
+        description:
+          "Which pre-authorised site to capture a secret from. The only input that names a policy: the URL, the control that generates the value, and where it is read from all come from a policy a human wrote. An agent that could name the source would be choosing what gets stored.",
+      },
+      target_id: {
+        type: "string",
+        description:
+          "The tab the agent is logged in on. A capture reads a secret the site shows only to a logged-in session, so it runs in this tab's browser context; the agent is blocked from observing the read.",
+      },
+    },
+    required: ["site_id", "target_id"],
+    additionalProperties: false,
+  },
   get_registration_status: {
     type: "object",
     properties: { binding_id: { type: "string" } },
@@ -106,6 +125,8 @@ const DESCRIPTIONS: Record<string, string> = {
   begin_credential_registration: "Begin a governed account registration.",
   get_registration_status: "Check a registration in progress.",
   cancel_registration: "Cancel a registration in progress.",
+  begin_credential_capture:
+    "Capture a secret the site generates (an API key, a token) into the vault. Returns only whether it happened — never the secret.",
 };
 
 /** Tool definitions for a backend, in a stable order. */
@@ -136,6 +157,8 @@ export async function dispatchTool(
     readonly execute: FillExecutor;
     /** Present only when the backend advertises `registration`. */
     readonly register?: (siteId: string) => Promise<ToolResult>;
+    /** Present only when the backend advertises `capture`. */
+    readonly capture?: (siteId: string, targetId: string) => Promise<ToolResult>;
     readonly observe: () => {
       tabOrigin: string;
       frameOrigin: string;
@@ -161,9 +184,13 @@ export async function dispatchTool(
   }
 
   const bindingId = typeof args.binding_id === "string" ? args.binding_id : "";
-  // Registration is identified by site. There is no binding yet — that is the
-  // whole point of it — so it is exempt from this requirement.
-  if (!bindingId && name !== "begin_credential_registration") {
+  // Registration and capture are identified by site, not a binding — a
+  // registration has none yet, and a capture creates one — so both are exempt.
+  if (
+    !bindingId &&
+    name !== "begin_credential_registration" &&
+    name !== "begin_credential_capture"
+  ) {
     return { status: "error", message: "binding_id is required" };
   }
 
@@ -199,6 +226,20 @@ export async function dispatchTool(
       const siteId = typeof args.site_id === "string" ? args.site_id : "";
       if (!siteId) return { status: "error", message: "site_id is required" };
       return ctx.register(siteId);
+    }
+
+    case "begin_credential_capture": {
+      // Like registration, the agent names a pre-authorised site. It also names
+      // the tab it is logged in on, because a capture reads a secret behind that
+      // login — but it chooses nothing about what is read or where it is stored.
+      if (!ctx.capture) {
+        return { status: "error", message: "capture is not available on this backend" };
+      }
+      const siteId = typeof args.site_id === "string" ? args.site_id : "";
+      const targetId = typeof args.target_id === "string" ? args.target_id : "";
+      if (!siteId) return { status: "error", message: "site_id is required" };
+      if (!targetId) return { status: "error", message: "target_id is required" };
+      return ctx.capture(siteId, targetId);
     }
 
     case "get_registration_status":
