@@ -32,6 +32,27 @@ const CHROME =
 const HAVE_CHROME = CHROME !== "" && existsSync(CHROME);
 const PASSWORD = "hunter2-real-chromium";
 
+/**
+ * Flags this test adds on top of the transport's own.
+ *
+ * `--headless=new` because a CI runner has no display, and the transport does
+ * not choose headlessness for callers — a bridge on someone's laptop wants a
+ * visible window.
+ *
+ * `--no-sandbox` on Linux CI only. GitHub's ubuntu runners ship
+ * /usr/bin/google-chrome, so the existsSync check above passes, and then Chrome
+ * exits 1 with ECONNRESET because it cannot set up its sandbox as root without
+ * user namespaces. That failure is about the runner, not about this package —
+ * but the flag genuinely weakens the browser, so it is scoped to CI rather than
+ * applied everywhere and forgotten.
+ */
+const LAUNCH_ARGS: string[] = [
+  "--headless=new",
+  ...(process.env.CI && process.platform === "linux"
+    ? ["--no-sandbox", "--disable-dev-shm-usage"]
+    : []),
+];
+
 let server: Server;
 let origin = "";
 
@@ -55,7 +76,7 @@ afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
 describe.skipIf(!HAVE_CHROME)("against a real Chromium", () => {
   it("completes the attach handshake Chromium actually implements", async () => {
-    const t = PipeCdpTransport.launch({ executablePath: CHROME, headless: true });
+    const t = PipeCdpTransport.launch({ executablePath: CHROME, args: LAUNCH_ARGS });
     try {
       const target = (await t.send({
         method: "Target.createTarget",
@@ -79,7 +100,7 @@ describe.skipIf(!HAVE_CHROME)("against a real Chromium", () => {
   }, 60_000);
 
   it("types a credential into a real form field, addressed by session", async () => {
-    const t = PipeCdpTransport.launch({ executablePath: CHROME, headless: true });
+    const t = PipeCdpTransport.launch({ executablePath: CHROME, args: LAUNCH_ARGS });
     try {
       const target = (await t.send({
         method: "Target.createTarget",
@@ -134,7 +155,7 @@ describe.skipIf(!HAVE_CHROME)("against a real Chromium", () => {
     // The per-client BrowserContext isolation the package promises. A shared
     // context would let one agent read another's targets — the shape of the
     // event-broadcast bug found in August.
-    const t = PipeCdpTransport.launch({ executablePath: CHROME, headless: true });
+    const t = PipeCdpTransport.launch({ executablePath: CHROME, args: LAUNCH_ARGS });
     try {
       const ctxA = (await t.send({ method: "Target.createBrowserContext" })) as {
         result?: { browserContextId?: string };
