@@ -111,14 +111,22 @@ describe("command flow over the socket", () => {
   it("blocks the whole target during a fill and says why", async () => {
     const { url, server, transport } = await start();
     const { ws } = await connect(url);
-    server.proxy.gate.openFillWindow("t1");
+    // The client's own page: a fill happens on the page the agent opened, so
+    // the target has to be one it owns for the fill reason to be the one it
+    // hits. Naming a target it does not own is refused earlier, and for a
+    // different reason — which is correct, but not what this test is about.
+    const created = await send(ws!, { id: 1, method: "Target.createTarget", params: { url: "about:blank" } });
+    const targetId = (created.result as { targetId: string }).targetId;
+    const before = transport.sent.length;
+
+    server.proxy.gate.openFillWindow(targetId);
     const reply = await send(ws!, {
       id: 3,
       method: "Runtime.evaluate",
-      params: { targetId: "t1", expression: "document.querySelector('input').value" },
+      params: { targetId, expression: "document.querySelector('input').value" },
     });
     expect((reply.error as { message: string }).message).toMatch(/fill_in_progress/);
-    expect(transport.sent).toHaveLength(0);
+    expect(transport.sent.length - before, "a refused command reached Chromium").toBe(0);
     ws!.close();
   });
 

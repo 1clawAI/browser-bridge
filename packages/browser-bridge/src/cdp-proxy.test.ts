@@ -5,19 +5,36 @@ import { describe, expect, it, vi } from "vitest";
 import { CdpProxy } from "./cdp-proxy.js";
 import { FakeCdpTransport } from "./cdp-transport.js";
 
-const TARGET = "target-1";
 
-function proxyWithClient(clientId = "agent-a", ctx = "ctx-a") {
+/**
+ * A registered client that owns one page, which is the only way a client comes
+ * to have one.
+ *
+ * These fixtures used to name a target the proxy had never heard of. That is
+ * not a state any client can reach — a page arrives either from the client's
+ * own `Target.createTarget` or not at all — and it mattered once commands
+ * started being checked against ownership: a target with no recorded owner is
+ * exactly what a client naming somebody else's page looks like.
+ */
+async function proxyWithClient(clientId = "agent-a", ctx = "ctx-a") {
   const transport = new FakeCdpTransport();
   const proxy = new CdpProxy(transport);
   const events: unknown[] = [];
   proxy.register(clientId, ctx, (e) => events.push(e));
-  return { transport, proxy, events };
+  const created = await proxy.handleCommand(clientId, {
+    method: "Target.createTarget",
+    params: { url: "about:blank" },
+  });
+  const target = (created.message.result as { targetId: string }).targetId;
+  // The fixtures below count what the client sent, so the setup call is not
+  // left in the ledger to be miscounted as one of theirs.
+  transport.sent.length = 0;
+  return { transport, proxy, events, target };
 }
 
 describe("command routing", () => {
   it("forwards an allowed command and returns Chromium's reply", async () => {
-    const { transport, proxy } = proxyWithClient();
+    const { transport, proxy, target: TARGET } = await proxyWithClient();
     const reply = await proxy.handleCommand("agent-a", {
       id: 1,
       method: "DOM.getDocument",
@@ -34,7 +51,7 @@ describe("command routing", () => {
    * agent at all, so filtering the response achieves nothing.
    */
   it("never forwards a refused command upstream", async () => {
-    const { transport, proxy } = proxyWithClient();
+    const { transport, proxy, target: TARGET } = await proxyWithClient();
     proxy.gate.openFillWindow(TARGET);
 
     const reply = await proxy.handleCommand("agent-a", {
@@ -48,7 +65,7 @@ describe("command routing", () => {
   });
 
   it("shapes a refusal as an ordinary CDP error, so frameworks handle it", async () => {
-    const { proxy } = proxyWithClient();
+    const { proxy, target: TARGET } = await proxyWithClient();
     const reply = await proxy.handleCommand("agent-a", { id: 3, method: "Network.getRequestPostData" });
     expect(reply.kind).toBe("refuse");
     expect(reply.message.id).toBe(3);
@@ -57,14 +74,14 @@ describe("command routing", () => {
   });
 
   it("refuses a client that never registered", async () => {
-    const { transport, proxy } = proxyWithClient();
+    const { transport, proxy, target: TARGET } = await proxyWithClient();
     const reply = await proxy.handleCommand("stranger", { id: 4, method: "DOM.getDocument" });
     expect(reply.kind).toBe("refuse");
     expect(transport.sent).toHaveLength(0);
   });
 
   it("refuses a malformed command rather than passing it through", async () => {
-    const { transport, proxy } = proxyWithClient();
+    const { transport, proxy, target: TARGET } = await proxyWithClient();
     const reply = await proxy.handleCommand("agent-a", { id: 5 });
     expect(reply.kind).toBe("refuse");
     expect(transport.sent).toHaveLength(0);
@@ -86,22 +103,22 @@ describe("per-client BrowserContext", () => {
     expect(proxy.contextOf("agent-a")).not.toBe(proxy.contextOf("agent-b"));
   });
 
-  it("forgets a client on unregister, so its context is not reused by name", () => {
-    const { proxy } = proxyWithClient();
+  it("forgets a client on unregister, so its context is not reused by name", async () => {
+    const { proxy, target: TARGET } = await proxyWithClient();
     proxy.unregister("agent-a");
     expect(proxy.contextOf("agent-a")).toBeUndefined();
   });
 });
 
 describe("event delivery", () => {
-  it("delivers ordinary events to registered clients", () => {
-    const { transport, events } = proxyWithClient();
+  it("delivers ordinary events to registered clients", async () => {
+    const { transport, events, target: TARGET } = await proxyWithClient();
     transport.emit({ method: "Page.loadEventFired", params: { targetId: TARGET } });
     expect(events).toHaveLength(1);
   });
 
-  it("suppresses events on a target that is being filled", () => {
-    const { transport, proxy, events } = proxyWithClient();
+  it("suppresses events on a target that is being filled", async () => {
+    const { transport, proxy, events, target: TARGET } = await proxyWithClient();
     proxy.gate.openFillWindow(TARGET);
     transport.emit({
       method: "Network.requestWillBeSent",
@@ -112,8 +129,8 @@ describe("event delivery", () => {
 
   // Dropped, not deferred: a queue would hand over exactly what suppression
   // prevented, one moment later.
-  it("does not replay suppressed events once the window closes", () => {
-    const { transport, proxy, events } = proxyWithClient();
+  it("does not replay suppressed events once the window closes", async () => {
+    const { transport, proxy, events, target: TARGET } = await proxyWithClient();
     proxy.gate.openFillWindow(TARGET);
     transport.emit({ method: "Network.requestWillBeSent", params: { targetId: TARGET } });
     proxy.gate.closeFillWindow(TARGET);
@@ -125,8 +142,8 @@ describe("event delivery", () => {
     expect(events).toHaveLength(1);
   });
 
-  it("stops delivering to a client after it unregisters", () => {
-    const { transport, proxy, events } = proxyWithClient();
+  it("stops delivering to a client after it unregisters", async () => {
+    const { transport, proxy, events, target: TARGET } = await proxyWithClient();
     proxy.unregister("agent-a");
     transport.emit({ method: "Page.loadEventFired", params: { targetId: TARGET } });
     expect(events).toHaveLength(0);
@@ -135,7 +152,7 @@ describe("event delivery", () => {
 
 describe("shutdown", () => {
   it("closes the upstream transport and drops every client", async () => {
-    const { transport, proxy } = proxyWithClient();
+    const { transport, proxy, target: TARGET } = await proxyWithClient();
     await proxy.close();
     expect(transport.closed).toBe(true);
     expect(proxy.contextOf("agent-a")).toBeUndefined();
@@ -158,23 +175,27 @@ describe("shutdown", () => {
  * methods it exists to stop, and the suite stayed green.
  */
 describe("a session addresses a target the way CDP does", () => {
-  const TARGET = "target-1";
-
+  /** A client that opened a page and attached to it — the ordinary sequence. */
   async function attached() {
     const transport = new FakeCdpTransport();
     const proxy = new CdpProxy(transport);
     proxy.register("agent", "ctx-1", () => {});
+    const created = await proxy.handleCommand("agent", {
+      method: "Target.createTarget",
+      params: { url: "about:blank" },
+    });
+    const TARGET = (created.message.result as { targetId: string }).targetId;
     const reply = await proxy.handleCommand("agent", {
       id: 1,
       method: "Target.attachToTarget",
       params: { targetId: TARGET, flatten: true },
     });
     const sessionId = (reply.message.result as { sessionId: string }).sessionId;
-    return { proxy, transport, sessionId };
+    return { proxy, transport, sessionId, TARGET };
   }
 
   it("blocks Runtime.evaluate on a filling target addressed by sessionId", async () => {
-    const { proxy, transport, sessionId } = await attached();
+    const { proxy, transport, sessionId , TARGET } = await attached();
     proxy.gate.openFillWindow(TARGET);
 
     const before = transport.sent.length;
@@ -200,7 +221,7 @@ describe("a session addresses a target the way CDP does", () => {
       "Input.dispatchKeyEvent",
       "Accessibility.getFullAXTree",
     ]) {
-      const { proxy, sessionId } = await attached();
+      const { proxy, sessionId , TARGET } = await attached();
       proxy.gate.openFillWindow(TARGET);
       const reply = await proxy.handleCommand("agent", { id: 3, sessionId, method, params: {} });
       expect(reply.kind, `${method} was forwarded during a fill`).toBe("refuse");
@@ -208,7 +229,7 @@ describe("a session addresses a target the way CDP does", () => {
   });
 
   it("lets the same command through once the window closes", async () => {
-    const { proxy, sessionId } = await attached();
+    const { proxy, sessionId , TARGET } = await attached();
     proxy.gate.openFillWindow(TARGET);
     proxy.gate.closeFillWindow(TARGET);
     const reply = await proxy.handleCommand("agent", {
@@ -237,7 +258,7 @@ describe("a session addresses a target the way CDP does", () => {
   });
 
   it("suppresses events for a filling target addressed by sessionId", async () => {
-    const { proxy, transport, sessionId } = await attached();
+    const { proxy, transport, sessionId , TARGET } = await attached();
     const seen: string[] = [];
     proxy.register("agent", "ctx-1", (e) => seen.push(e.method ?? ""));
     proxy.gate.openFillWindow(TARGET);
@@ -262,17 +283,26 @@ describe("one client's events do not reach another", () => {
     const b: string[] = [];
     proxy.register("agent-a", "ctx-a", (e) => a.push(e.method ?? ""));
     proxy.register("agent-b", "ctx-b", (e) => b.push(e.method ?? ""));
-    return { proxy, transport, a, b };
+    /** Open a page for a client and attach to it, returning the session. */
+    const attach = async (clientId: string) => {
+      const created = await proxy.handleCommand(clientId, {
+        method: "Target.createTarget",
+        params: { url: "about:blank" },
+      });
+      const targetId = (created.message.result as { targetId: string }).targetId;
+      const reply = await proxy.handleCommand(clientId, {
+        id: 1,
+        method: "Target.attachToTarget",
+        params: { targetId, flatten: true },
+      });
+      return (reply.message.result as { sessionId: string }).sessionId;
+    };
+    return { proxy, transport, a, b, attach };
   }
 
   it("delivers a session's events only to the client that attached it", async () => {
-    const { proxy, transport, a, b } = twoClients();
-    const reply = await proxy.handleCommand("agent-a", {
-      id: 1,
-      method: "Target.attachToTarget",
-      params: { targetId: "t-a", flatten: true },
-    });
-    const sessionId = (reply.message.result as { sessionId: string }).sessionId;
+    const { transport, a, b, attach } = twoClients();
+    const sessionId = await attach("agent-a");
 
     transport.emit({ sessionId, method: "Network.responseReceived", params: {} });
 
@@ -298,13 +328,8 @@ describe("one client's events do not reach another", () => {
   });
 
   it("forgets a departed client's sessions", async () => {
-    const { proxy, transport, b } = twoClients();
-    const reply = await proxy.handleCommand("agent-a", {
-      id: 1,
-      method: "Target.attachToTarget",
-      params: { targetId: "t-a", flatten: true },
-    });
-    const sessionId = (reply.message.result as { sessionId: string }).sessionId;
+    const { proxy, transport, b, attach } = twoClients();
+    const sessionId = await attach("agent-a");
     proxy.unregister("agent-a");
 
     transport.emit({ sessionId, method: "Network.responseReceived", params: {} });

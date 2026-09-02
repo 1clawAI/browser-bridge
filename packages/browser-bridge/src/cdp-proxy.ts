@@ -158,6 +158,22 @@ export class CdpProxy {
     const handled = await this.#answerHandshake(clientId, msg);
     if (handled) return handled;
 
+    // Refuse anything naming a target or session the client does not own.
+    //
+    // This is the command-side half of the confinement. Event delivery was
+    // already filtered per client, which made the gap read as closed, but
+    // Target.getTargets, getTargetInfo and attachToTarget are all allowlisted
+    // and none of them checked whose target was named. So B could list A's
+    // pages, attach to one, and drive it with the sessionId Chromium returned:
+    // Runtime.evaluate on A's page, Network.getCookies for A's session. The
+    // class doc names that outcome as the thing it prevents — agent B simply
+    // logged in as A — and until now only events were stopping it.
+    //
+    // Ownership was already being recorded on every attach and read only by
+    // the event filter. Nothing new has to be tracked; it has to be consulted.
+    const confined = this.#refuseIfNotOwned(clientId, msg);
+    if (confined) return confined;
+
     const targetId = this.#targetOf(msg);
     const decision: CdpDecision = this.#gate.evaluateCommand({
       method: msg.method,
@@ -243,7 +259,61 @@ export class CdpProxy {
       }
     }
     this.#learnSession(clientId, msg, result);
+
+    // Chromium answers getTargets with every target it has, including other
+    // clients' pages and their URLs. Refusing the command outright would break
+    // the frameworks that call it on connect, so the reply is narrowed to what
+    // the caller owns instead — same list it would see if it were alone.
+    if (msg.method === "Target.getTargets") {
+      return { kind: "forward", message: this.#onlyOwnTargets(clientId, result) };
+    }
+
     return { kind: "forward", message: result };
+  }
+
+  /**
+   * The ownership check every command passes through.
+   *
+   * A message names a target one of two ways: a `sessionId` from a previous
+   * attach, or `params.targetId`. Both are checked against what this client
+   * owns — sessions against the attach ledger, targets against the browser
+   * context the bridge put them in.
+   *
+   * Unknown ids are refused rather than allowed. A target the proxy has no
+   * record of is one it did not create for anybody, and letting those through
+   * would reopen the hole for any id an agent can guess or read from an event.
+   */
+  #refuseIfNotOwned(clientId: ClientId, msg: CdpMessage): ProxyReply | undefined {
+    if (typeof msg.sessionId === "string") {
+      const owner = this.#sessionOwners.get(msg.sessionId);
+      if (owner !== clientId) {
+        return this.#refuse(msg, "session belongs to another client");
+      }
+    }
+
+    const named = msg.params?.targetId;
+    if (typeof named === "string") {
+      const ctx = this.#contexts.get(clientId);
+      if (ctx === undefined || this.#targetContexts.get(named) !== ctx) {
+        return this.#refuse(msg, "target belongs to another client");
+      }
+    }
+
+    return undefined;
+  }
+
+  /** Narrow a Target.getTargets reply to the caller's own context. */
+  #onlyOwnTargets(clientId: ClientId, reply: CdpMessage): CdpMessage {
+    const ctx = this.#contexts.get(clientId);
+    const infos = (reply.result as { targetInfos?: unknown } | undefined)?.targetInfos;
+    if (!Array.isArray(infos)) return reply;
+
+    const mine = infos.filter((t) => {
+      const id = (t as { targetId?: unknown }).targetId;
+      return typeof id === "string" && ctx !== undefined && this.#targetContexts.get(id) === ctx;
+    });
+
+    return { ...reply, result: { ...(reply.result as object), targetInfos: mine } };
   }
 
   /**
