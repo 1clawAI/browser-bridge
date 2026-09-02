@@ -12,6 +12,7 @@ import type {
   Session,
   SessionCtx,
 } from "@1claw/browser-bridge-protocol";
+import { hostAllowed } from "../host-match.js";
 import { SecretHandle } from "../secret-handle.js";
 import type { VaultBackend } from "../vault-backend.js";
 
@@ -207,36 +208,3 @@ export class MockVaultDriver implements VaultBackend {
   }
 }
 
-/**
- * Host matching, with the same rules the hosted backend uses.
- *
- * Userinfo is stripped explicitly rather than trusted to a URL parser, because
- * `https://allowed.example@evil.test/` is the classic disguise. A bare list
- * entry matches only itself; a leading dot matches the apex and any subdomain.
- * Anything unparseable denies — "not a URL" is not evidence that it is safe.
- */
-function hostAllowed(origin: string, list: readonly string[]): boolean {
-  const host = hostOf(origin);
-  if (host === undefined) return false;
-  return list.some((raw) => {
-    const entry = raw.trim().toLowerCase();
-    if (entry.startsWith(".")) {
-      const suffix = entry.slice(1);
-      return host === suffix || host.endsWith(`.${suffix}`);
-    }
-    return host === entry;
-  });
-}
-
-function hostOf(value: string): string | undefined {
-  if (!value) return undefined;
-  const afterScheme = value.includes("://") ? value.slice(value.indexOf("://") + 3) : value;
-  const authority = afterScheme.split(/[/?#]/)[0];
-  if (authority === undefined || authority === "") return undefined;
-  const at = authority.lastIndexOf("@");
-  const hostPort = at >= 0 ? authority.slice(at + 1) : authority;
-  const host = hostPort.startsWith("[")
-    ? hostPort.slice(1).split("]")[0]
-    : hostPort.split(":")[0];
-  return host ? host.toLowerCase() : undefined;
-}

@@ -8,10 +8,8 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset. 176 tests here, three of them against a launched Chromium, plus
-> the vault half.
->
-> **Not built:** the community driver — see [Roadmap](#roadmap).
+> toolset, and three backends. 189 tests here, three of them against a
+> launched Chromium, plus the vault half.
 >
 > **The server side is implemented**, end to end:
 >
@@ -28,9 +26,8 @@ sees the password.
 > answer. There is no feature flag — the endpoints had no implementation
 > behind them, which is a different thing from being switched off.
 >
-> **Going public** requires the adversarial suite green on every shipped driver.
-> Only the saas driver ships today, so that is the bar it has to clear — the
-> community driver raises the bar rather than delays it.
+> **The bar for shipping** is the adversarial suite green on every backend that
+> ships. Three do — hosted, local file, and in-memory — and it is.
 >
 > That suite is `adversarial.test.ts`: it drives `startBridge`, the entry point
 > a real deployment uses, and plays the agent as hostile rather than careless.
@@ -114,7 +111,95 @@ silent exposure. During a fill the *whole target* is blocked, not just the
 field, and push events on it are dropped rather than queued — replaying them
 afterwards would hand over exactly what suppression prevented.
 
-### Setup
+### How it fits together
+
+Four parts, and it is worth being clear which does what:
+
+```
+  your agent  ──CDP──▶  bridge  ──▶  Chromium
+  (framework)           │  ▲          (the page)
+                        │  └── types the credential here
+                        ▼
+                     backend
+             (where the secret lives)
+```
+
+- **Your agent** connects to the bridge as if it were Chromium, and drives the
+  browser normally. It also calls `request_fill` when it needs a credential.
+- **The bridge** owns the browser. Every CDP command from the agent crosses an
+  allowlist; nothing else is attached. When a fill is authorised it opens a
+  *separate* page the agent has never scripted, navigates to the binding's own
+  login URL, types there, and closes it.
+- **The backend** decides whether a fill may happen and holds the secret. Three
+  ship; they differ only in where secrets live.
+- **Chromium** is launched by the bridge over a pipe — no debugging port, which
+  would be reachable by the very pages being driven.
+
+The agent receives `{"status":"filled"}`. Not the password. There is no tool
+that returns one.
+
+### Pick a backend
+
+| Backend | Secrets live | Needs an account | Use it for |
+| --- | --- | --- | --- |
+| `MockVaultDriver` | in memory | no | trying it out, tests |
+| `LocalVaultDriver` | an encrypted file on your machine | no | your own credentials |
+| `SaasDriver` | the 1Claw vault | yes | teams, audit, policy, HITL |
+
+All three enforce the same rules. A backend can refuse a fill; none can widen
+what is allowed, because the origin, frame, TOCTOU and CDP checks live in the
+core and run identically whichever you choose.
+
+### Try it in one command
+
+No account, no config, no network:
+
+```bash
+pnpm install && pnpm build
+node packages/browser-bridge/examples/demo.mjs
+```
+
+It serves a login form, launches Chromium, asks for a fill, and prints exactly
+what the agent received so you can check the password is not in it.
+
+### Your own credentials, no account
+
+The community backend keeps secrets in an AES-256-GCM file, keyed by scrypt
+from a passphrase you hold. Nothing leaves your machine.
+
+```bash
+export ONECLAW_BRIDGE_VAULT_PASSPHRASE='something long'
+
+1claw-vault init ~/.1claw/vault.json
+
+# The secret comes from stdin, never from an argument — argv is world-readable
+# in `ps`, and would land in your shell history too.
+printf '%s' 'the-password' | 1claw-vault add ~/.1claw/vault.json \
+  --id acme \
+  --url https://app.example.com/login \
+  --hosts app.example.com
+
+1claw-vault list ~/.1claw/vault.json     # ids and rules; never a secret
+```
+
+Then start the bridge against it:
+
+```bash
+1claw-browser-bridge --vault ~/.1claw/vault.json --chrome /path/to/chrome
+```
+
+**About `--hosts`.** A bare entry matches only itself. `.example.com` — with the
+leading dot — matches `example.com` and any subdomain. `*` is refused, because
+the matcher has no wildcard: a `*` entry would be stored, match nothing, and
+leave you believing a host was allowed.
+
+**About the passphrase.** It is the only thing protecting the file, so scrypt is
+tuned to make each guess expensive (N=2¹⁷, ~128 MB). The parameters are stored
+in the file *and authenticated*, so nobody can edit them down to something cheap
+and still decrypt. There is deliberately no command that prints a secret back
+out.
+
+### With the hosted vault
 
 Pair the machine once — a human step, and deliberately so, since the device
 being paired is the one that will type secrets into pages:
@@ -125,9 +210,7 @@ curl -sX POST https://api.1claw.co/v1/browser/devices \
   -d '{"label":"my-laptop","public_key_pin":"<device key>"}'
 ```
 
-The `bb_` credential comes back once. Define what may be filled where — the
-hosts are compared exactly, and a wildcard is refused rather than stored,
-because a wildcard would match nothing while looking like it allowed something:
+The `bb_` credential comes back once. Then define what may be filled where:
 
 ```bash
 curl -sX POST https://api.1claw.co/v1/browser/credentials \
@@ -153,13 +236,15 @@ in for another. The bridge refuses to start with any of them missing rather than
 failing on the first fill.
 
 `ONECLAW_TOKEN` is worth being clear about: it is your ordinary user credential,
-and the bridge process holds it for as long as it runs. That is not a
-side effect of the design, it is the design — opening a session and collecting a
+and the bridge process holds it for as long as it runs. That is not a side
+effect of the design, it is the design — opening a session and collecting a
 credential are things a person authorises, and the alternative is a long-lived
 credential that can collect secrets without one. Scope it the way you would any
 token on a workstation, and run the bridge as a foreground process you started
 rather than a service that outlives your attention. Sessions expire after eight
 hours for the same reason.
+
+### Connecting your agent
 
 Point your framework's `cdp_url` at the URL the bridge prints. Every command
 crosses the gate; nothing else is attached to Chromium.
@@ -240,7 +325,7 @@ rejecting only cross-site `Origin`s.
   pnpm install && pnpm build && node packages/browser-bridge/examples/demo.mjs
   ```
 
-  The community driver is *not* a launch blocker. It raises the bar rather than delays it: the adversarial suite must be green on every shipped driver, and only the saas driver ships. An earlier version of this list said otherwise and contradicted the note above.
+  The community driver has landed too: `LocalVaultDriver`, an AES-256-GCM file keyed by scrypt from a passphrase you hold, with `1claw-vault` to manage it. Three backends now ship, and the adversarial suite is green on all of them — which was always the real bar.
 - **v0.2** — governed credential registration, HITL approval queue, TOTP fill
 - **v0.3** — cloud-runtime sidecar (platform trust model)
 

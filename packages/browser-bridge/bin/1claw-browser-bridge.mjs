@@ -11,7 +11,8 @@
  * rules.
  *
  * Usage:
- *   1claw-browser-bridge --chrome /path/to/chrome
+ *   1claw-browser-bridge --chrome /path/to/chrome                    # hosted vault
+ *   1claw-browser-bridge --vault ~/.1claw/vault.json --chrome ...    # local file
  *
  * Env:
  *   ONECLAW_API_URL            vault base (default https://api.1claw.co)
@@ -27,7 +28,7 @@
  * Collapsing them would let any one of the three stand in for the others.
  */
 
-import { startBridge, SaasDriver } from "../dist/index.js";
+import { startBridge, SaasDriver, LocalVaultDriver } from "../dist/index.js";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,6 +55,50 @@ if (!chrome) {
   console.error("No Chromium found. Pass --chrome /path/to/chrome.");
   process.exit(2);
 }
+
+// ── Local vault: your own credentials, no account ────────────────────────────
+//
+// Checked before the hosted path so `--vault` short-circuits the three env vars
+// the SaaS backend needs. A person running the community backend should not be
+// told to set ONECLAW_TOKEN.
+const vaultPath = arg("vault") || process.env.ONECLAW_BRIDGE_VAULT;
+if (vaultPath) {
+  const passphrase = process.env.ONECLAW_BRIDGE_VAULT_PASSPHRASE;
+  if (!passphrase) {
+    console.error("ONECLAW_BRIDGE_VAULT_PASSPHRASE is not set.");
+    console.error("Not a flag on purpose: argv is world-readable in `ps`.");
+    process.exit(2);
+  }
+  const local = new LocalVaultDriver({ path: vaultPath, passphrase });
+  // Opened here so a wrong passphrase fails now, rather than at the first fill
+  // when someone has already pointed an agent at a browser. A wrong passphrase
+  // is an ordinary mistake, so it gets one line — not a stack trace that buries
+  // the message it needs to convey.
+  try {
+    await local.open();
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(2);
+  }
+
+  const localBridge = await startBridge({
+    executablePath: chrome,
+    backend: local,
+    host: "127.0.0.1",
+    ...(process.env.ONECLAW_BRIDGE_PORT ? { port: Number(process.env.ONECLAW_BRIDGE_PORT) } : {}),
+  });
+  console.log(localBridge.url);
+  console.error(`browser bridge ${version} listening on ${localBridge.host}:${localBridge.port}`);
+  console.error(`vault: ${vaultPath}`);
+  console.error(`tools: ${localBridge.tools.map((t) => t.name).join(", ") || "(none)"}`);
+  const stop = async (signal) => {
+    console.error(`\n${signal} — closing`);
+    await localBridge.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void stop("SIGINT"));
+  process.on("SIGTERM", () => void stop("SIGTERM"));
+} else {
 
 const credential = process.env.ONECLAW_BRIDGE_CREDENTIAL;
 if (!credential) {
@@ -109,3 +154,4 @@ const shutdown = async (signal) => {
 };
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
+}

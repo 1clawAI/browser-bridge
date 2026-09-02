@@ -24,4 +24,15 @@ export {
   type MockVaultDriverOptions,
   type MockBinding,
 } from "./drivers/mock.js";
+// The community backend: your credentials, your machine, no account and no
+// server. An AES-256-GCM file keyed by scrypt from a passphrase you hold.
+export { LocalVaultDriver, type LocalVaultDriverOptions } from "./drivers/local.js";
+export {
+  sealVault,
+  openVault,
+  VAULT_FORMAT,
+  type VaultFile,
+  type VaultEntry,
+} from "./drivers/local-vault-file.js";
+export { hostAllowed, hostOf } from "./host-match.js";
 export * from "@1claw/browser-bridge-protocol";

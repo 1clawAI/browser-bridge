@@ -26,7 +26,8 @@
     "@types/ws": "^8.18.1"
   },
   "bin": {
-    "1claw-browser-bridge": "./bin/1claw-browser-bridge.mjs"
+    "1claw-browser-bridge": "./bin/1claw-browser-bridge.mjs",
+    "1claw-vault": "./bin/1claw-vault.mjs"
   },
   "publishConfig": {
     "access": "public"
