@@ -43,6 +43,10 @@ export type ToolResult =
    * blindly is how a credential lands on whatever page arrived in the meantime.
    */
   | { readonly status: "aborted"; readonly reason: string }
+  /** An account now exists and its credential is in the vault. Never a password. */
+  | { readonly status: "registered"; readonly bindingId: string }
+  /** The site did not accept it, or did not say so. Nothing was stored. */
+  | { readonly status: "rejected"; readonly reason: string }
   | { readonly status: "error"; readonly message: string };
 
 const SCHEMAS: Record<string, Readonly<Record<string, unknown>>> = {
@@ -58,6 +62,32 @@ const SCHEMAS: Record<string, Readonly<Record<string, unknown>>> = {
     additionalProperties: false,
   },
   get_fill_status: {
+    type: "object",
+    properties: { binding_id: { type: "string" } },
+    required: ["binding_id"],
+    additionalProperties: false,
+  },
+  begin_credential_registration: {
+    type: "object",
+    properties: {
+      site_id: {
+        type: "string",
+        description:
+          "Which pre-authorised site to create an account on. Deliberately the only input: the host, signup URL, username and form selectors all come from a policy a human wrote. An agent that could name the host would be choosing where a credential gets created.",
+      },
+    },
+    required: ["site_id"],
+    // No url, username, password or host. There is nothing here an agent could
+    // set to redirect where the credential ends up.
+    additionalProperties: false,
+  },
+  get_registration_status: {
+    type: "object",
+    properties: { binding_id: { type: "string" } },
+    required: ["binding_id"],
+    additionalProperties: false,
+  },
+  cancel_registration: {
     type: "object",
     properties: { binding_id: { type: "string" } },
     required: ["binding_id"],
@@ -104,6 +134,8 @@ export async function dispatchTool(
     readonly backend: VaultBackend;
     readonly sessionId: string;
     readonly execute: FillExecutor;
+    /** Present only when the backend advertises `registration`. */
+    readonly register?: (siteId: string) => Promise<ToolResult>;
     readonly observe: () => {
       tabOrigin: string;
       frameOrigin: string;
@@ -121,7 +153,11 @@ export async function dispatchTool(
   }
 
   const bindingId = typeof args.binding_id === "string" ? args.binding_id : "";
-  if (!bindingId) return { status: "error", message: "binding_id is required" };
+  // Registration is identified by site. There is no binding yet — that is the
+  // whole point of it — so it is exempt from this requirement.
+  if (!bindingId && name !== "begin_credential_registration") {
+    return { status: "error", message: "binding_id is required" };
+  }
 
   switch (name) {
     case "request_fill": {
@@ -143,6 +179,23 @@ export async function dispatchTool(
       }
       return ctx.execute(decision);
     }
+
+    case "begin_credential_registration": {
+      // The agent names a pre-authorised site and nothing else. No host, no
+      // URL, no username — those come from a policy a human wrote, because a
+      // registration has no binding yet, and whoever picks the host decides
+      // where a credential gets created.
+      if (!ctx.register) {
+        return { status: "error", message: "registration is not available on this backend" };
+      }
+      const siteId = typeof args.site_id === "string" ? args.site_id : "";
+      if (!siteId) return { status: "error", message: "site_id is required" };
+      return ctx.register(siteId);
+    }
+
+    case "get_registration_status":
+    case "cancel_registration":
+      return { status: "in_progress", bindingId };
 
     case "get_fill_status":
       return { status: "in_progress", bindingId };

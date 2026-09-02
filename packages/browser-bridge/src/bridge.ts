@@ -7,6 +7,7 @@ import { PROTOCOL_VERSION } from "@1claw/browser-bridge-protocol";
 import { CdpGate } from "./cdp-policy.js";
 import type { CdpMessage, CdpTransport } from "./cdp-transport.js";
 import { FillEngine, type FillOutcome } from "./fill-engine.js";
+import { RegistrationEngine } from "./registration-engine.js";
 import { buildToolset, dispatchTool, type ToolDefinition, type ToolResult } from "./mcp-tools.js";
 import { PipeCdpTransport } from "./pipe-transport.js";
 import { CdpProxyServer } from "./proxy-server.js";
@@ -86,6 +87,76 @@ export type BridgeHandle = {
  */
 const BRIDGE_VERSION = "0.1.0";
 
+/**
+ * Binds a backend's registration methods to the core's registration engine.
+ *
+ * The engine does not know which backend it is talking to — the same rule as
+ * the fill path, and what `core-has-no-driver-conditionals` enforces.
+ */
+class RegistrationAdapter {
+  readonly #engine: RegistrationEngine;
+  readonly #backend: VaultBackend;
+
+  constructor(
+    backend: VaultBackend,
+    transport: CdpTransport,
+    gate: CdpGate,
+    onError: (e: unknown) => void,
+  ) {
+    this.#backend = backend;
+    const b = backend as unknown as {
+      takeRegistrationSecret?: (id: string) => Promise<never>;
+      commitRegistration?: (id: string) => Promise<{ bindingId: string }>;
+      cancelRegistration?: (id: string) => Promise<void>;
+    };
+    this.#engine = new RegistrationEngine({
+      transport,
+      gate,
+      // A backend advertising the capability without these is a programming
+      // error, and one worth failing loudly on rather than half-registering.
+      takeSecret: (id) => {
+        if (!b.takeRegistrationSecret) {
+          throw new Error("backend advertises registration but cannot produce a secret");
+        }
+        return b.takeRegistrationSecret(id);
+      },
+      commit: (id) => {
+        if (!b.commitRegistration) {
+          throw new Error("backend advertises registration but cannot commit");
+        }
+        return b.commitRegistration(id);
+      },
+      cancel: async (id) => {
+        await b.cancelRegistration?.(id);
+      },
+      onError,
+    });
+  }
+
+  async register(siteId: string): Promise<ToolResult> {
+    const b = this.#backend as unknown as {
+      beginRegistration?: (req: { siteId: string }) => Promise<Record<string, unknown>>;
+    };
+    if (!b.beginRegistration) return { status: "error", message: "registration is not available" };
+
+    const decision = await b.beginRegistration({ siteId });
+    if (decision.kind !== "registration_grant") {
+      return { status: "denied", reason: String(decision.reason ?? "policy_denied") };
+    }
+    const outcome = await this.#engine.register(decision as never);
+    switch (outcome.status) {
+      case "registered":
+        return { status: "registered", bindingId: outcome.bindingId };
+      case "denied":
+        return { status: "denied", reason: outcome.reason };
+      case "rejected":
+        return { status: "rejected", reason: outcome.reason };
+      default:
+        return { status: "error", message: outcome.message };
+    }
+  }
+}
+
 /** Bumped by navigation; the fill re-checks it immediately before typing. */
 class Generations {
   readonly #byTarget = new Map<string, number>();
@@ -158,6 +229,13 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
     }
   });
 
+  // Only constructed when the backend says it can register.
+  const registrations = backend.capabilities().registration
+    ? new RegistrationAdapter(backend, transport, gate, (e) =>
+        console.error("[browser-bridge] registration failed:", e),
+      )
+    : undefined;
+
   const fills = new FillEngine({
     backend,
     transport,
@@ -217,6 +295,11 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
         backend,
         sessionId,
         observe,
+        // Present only when the backend advertises it. A tool the adapter does
+        // not register cannot be called, so this is belt and braces — but a
+        // capability can differ from a method's existence on a driver, and the
+        // tool must not work in that gap.
+        ...(registrations ? { register: (siteId: string) => registrations.register(siteId) } : {}),
         // The executor is the only path from a tool call to a credential, and
         // it returns a status. A tool result that carried the secret would be
         // the shortest way around every control in this package.

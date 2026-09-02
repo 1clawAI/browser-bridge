@@ -42,7 +42,17 @@ const req = (over: Partial<FillRequest> = {}): FillRequest => ({
 describe("the vault file", () => {
   it("round-trips through seal and open", async () => {
     const file = await sealVault([ENTRY], PASSPHRASE);
-    expect(await openVault(file, PASSPHRASE)).toEqual([ENTRY]);
+    expect(await openVault(file, PASSPHRASE)).toEqual({ entries: [ENTRY], registrations: [] });
+  }, SLOW);
+
+  it("still reads a v1 file, which held a bare array", async () => {
+    // Registration policies turned the payload into a document. Existing vaults
+    // hold an array, and their owners may never use the new feature — so they
+    // are normalised on read rather than migrated.
+    const file = await sealVault([ENTRY], PASSPHRASE);
+    const doc = await openVault(file, PASSPHRASE);
+    expect(doc.entries).toEqual([ENTRY]);
+    expect(doc.registrations).toEqual([]);
   }, SLOW);
 
   it("never contains the secret in the clear", async () => {

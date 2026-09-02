@@ -31,12 +31,59 @@ export const VAULT_FORMAT = 1;
  */
 export const KDF = { N: 1 << 17, r: 8, p: 1, keyLen: 32 } as const;
 
+/**
+ * Permission for an agent to create one account, authored by a human.
+ *
+ * Everything an agent could otherwise choose lives here: the host, the signup
+ * URL, the username, the form selectors, and what success looks like. The agent
+ * supplies only the `id`.
+ *
+ * `allowedHosts` is the binding the account will get once it exists, so a
+ * registration and the fill that follows it are governed by the same rule.
+ */
+export type RegistrationPolicy = {
+  readonly id: string;
+  readonly signupUrl: string;
+  readonly username: string;
+  readonly allowedHosts: readonly string[];
+  readonly usernameSelector: string;
+  readonly passwordSelector: string;
+  readonly submitSelector?: string;
+  readonly success: {
+    readonly urlChanges?: boolean;
+    readonly selector?: string;
+    readonly errorSelector?: string;
+  };
+  /** Site rules the generated password must satisfy. */
+  readonly passwordPolicy?: {
+    readonly length?: number;
+    readonly lower?: boolean;
+    readonly upper?: boolean;
+    readonly digits?: boolean;
+    readonly symbols?: string;
+  };
+  /** Where the credential is written once the site accepts it. */
+  readonly loginUrl: string;
+};
+
 export type VaultEntry = {
   readonly id: string;
   readonly secret: string;
   readonly loginUrl: string;
   readonly allowedHosts: readonly string[];
   readonly ssoHosts?: readonly string[];
+};
+
+/**
+ * What the ciphertext decrypts to.
+ *
+ * Version 1 files hold a bare array of entries. Reading both shapes keeps
+ * existing vaults working rather than requiring a migration for a feature their
+ * owner may never use.
+ */
+export type VaultContents = {
+  readonly entries: VaultEntry[];
+  readonly registrations: RegistrationPolicy[];
 };
 
 /** The on-disk shape. Everything outside `ciphertext` is public by design. */
@@ -79,7 +126,16 @@ export async function deriveKey(passphrase: string, salt: Buffer, kdf: VaultFile
 }
 
 /** Encrypt entries into a fresh envelope. A new salt and nonce every time. */
-export async function sealVault(entries: readonly VaultEntry[], passphrase: string): Promise<VaultFile> {
+export async function sealVault(
+  contents: readonly VaultEntry[] | VaultContents,
+  passphrase: string,
+): Promise<VaultFile> {
+  const doc: VaultContents = Array.isArray(contents)
+    ? { entries: [...(contents as readonly VaultEntry[])], registrations: [] }
+    : {
+        entries: [...(contents as VaultContents).entries],
+        registrations: [...((contents as VaultContents).registrations ?? [])],
+      };
   if (passphrase.length < 12) {
     // The file's only defence. A short passphrase makes the scrypt cost moot.
     throw new Error("passphrase must be at least 12 characters");
@@ -92,7 +148,7 @@ export async function sealVault(entries: readonly VaultEntry[], passphrase: stri
   const cipher = createCipheriv("aes-256-gcm", key, nonce);
   cipher.setAAD(aad(header));
   const ciphertext = Buffer.concat([
-    cipher.update(Buffer.from(JSON.stringify(entries), "utf8")),
+    cipher.update(Buffer.from(JSON.stringify(doc), "utf8")),
     cipher.final(),
   ]);
   key.fill(0);
@@ -106,7 +162,7 @@ export async function sealVault(entries: readonly VaultEntry[], passphrase: stri
 }
 
 /** Decrypt a vault. Throws on a wrong passphrase or a tampered file alike. */
-export async function openVault(file: VaultFile, passphrase: string): Promise<VaultEntry[]> {
+export async function openVault(file: VaultFile, passphrase: string): Promise<VaultContents> {
   if (file.format !== VAULT_FORMAT) {
     throw new Error(`unsupported vault format ${file.format}; this build reads ${VAULT_FORMAT}`);
   }
@@ -120,9 +176,15 @@ export async function openVault(file: VaultFile, passphrase: string): Promise<Va
       decipher.update(Buffer.from(file.ciphertext, "base64")),
       decipher.final(),
     ]);
-    const entries = JSON.parse(plain.toString("utf8")) as VaultEntry[];
+    const parsed: unknown = JSON.parse(plain.toString("utf8"));
     plain.fill(0);
-    return entries;
+    // A v1 file is a bare array. Normalise rather than migrate.
+    return Array.isArray(parsed)
+      ? { entries: parsed as VaultEntry[], registrations: [] }
+      : {
+          entries: (parsed as VaultContents).entries ?? [],
+          registrations: (parsed as VaultContents).registrations ?? [],
+        };
   } catch {
     // One message for a wrong passphrase and for a tampered file. Telling them
     // apart tells an attacker which of the two they achieved.

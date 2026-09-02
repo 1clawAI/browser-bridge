@@ -8,8 +8,8 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, and three backends. 189 tests here, three of them against a
-> launched Chromium, plus the vault half.
+> toolset, three backends, and governed account registration. 208 tests here,
+> three of them against a launched Chromium, plus the vault half.
 >
 > **The server side is implemented**, end to end:
 >
@@ -199,6 +199,52 @@ in the file *and authenticated*, so nobody can edit them down to something cheap
 and still decrypt. There is deliberately no command that prints a secret back
 out.
 
+### Creating an account, without the agent knowing the password
+
+The bridge can sign up for a site, generate the password itself, and store it —
+with the agent never seeing it. That is `begin_credential_registration`, and it
+is available only when a human has written a policy for the site.
+
+```bash
+1claw-vault allow-signup ~/.1claw/vault.json \
+  --id acme \
+  --signup   https://acme.example.com/signup \
+  --login    https://acme.example.com/login \
+  --username ada@example.com \
+  --hosts    acme.example.com \
+  --user-sel '#email' --pass-sel '#password' --submit-sel 'button[type=submit]' \
+  --success-sel '.dashboard'
+```
+
+Then the agent calls the tool with **one argument**:
+
+```jsonc
+{ "site_id": "acme" }        // → { "status": "registered", "bindingId": "acme" }
+```
+
+**Why so little.** A fill names a binding a human already made, so the host was
+someone's decision. A registration has no binding yet — so if the agent named
+the host, the agent would be choosing where a credential gets created. The host,
+signup URL, username and selectors therefore all come from the policy. The
+request type has nowhere to put an alternative.
+
+The bridge generates the password, types it into a page the agent has never
+scripted, and only then stores it. The agent gets a binding id back, which it
+can use for later fills. It never receives the value at any point.
+
+**Committing is separate from typing, on purpose.** A password stored that the
+site never accepted produces a binding that will never work, and you find out
+weeks later when a login fails. So the bridge waits for the success signal you
+described — `--success-sel`, or the URL changing — and if it does not see one it
+**cancels rather than commits**. `{"status":"rejected","reason":"no_success_signal"}`
+means nothing was stored.
+
+**What it does not do yet.** Email verification. If a site requires clicking a
+link in an inbox, this will report `no_success_signal` and store nothing —
+correctly, since the account does not exist yet. Whoever reads that email can
+complete the signup, so handing it to the agent would undo the point; that needs
+its own design rather than a quick addition.
+
 ### With the hosted vault
 
 Pair the machine once — a human step, and deliberately so, since the device
@@ -326,7 +372,7 @@ rejecting only cross-site `Origin`s.
   ```
 
   The community driver has landed too: `LocalVaultDriver`, an AES-256-GCM file keyed by scrypt from a passphrase you hold, with `1claw-vault` to manage it. Three backends now ship, and the adversarial suite is green on all of them — which was always the real bar.
-- **v0.2** — governed credential registration, HITL approval queue, TOTP fill
+- **v0.2** — governed credential registration **(done, local backend)**; HITL approval queue, TOTP fill, and registration on the hosted backend still to come
 - **v0.3** — cloud-runtime sidecar (platform trust model)
 
 ## Security

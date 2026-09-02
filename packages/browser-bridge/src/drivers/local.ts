@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import type {
   AuditEvent,
+  RegistrationDecision,
+  RegistrationRequest,
   Capabilities,
   FillDecision,
   FillRequest,
@@ -14,9 +16,17 @@ import type {
   SessionCtx,
 } from "@1claw/browser-bridge-protocol";
 import { hostAllowed } from "../host-match.js";
+import { generatePassword } from "../password-gen.js";
 import { SecretHandle } from "../secret-handle.js";
 import type { VaultBackend } from "../vault-backend.js";
-import { openVault, type VaultEntry, type VaultFile } from "./local-vault-file.js";
+import {
+  openVault,
+  sealVault,
+  type RegistrationPolicy,
+  type VaultContents,
+  type VaultEntry,
+  type VaultFile,
+} from "./local-vault-file.js";
 
 export type LocalVaultDriverOptions = {
   /** Path to the encrypted vault file. */
@@ -62,6 +72,8 @@ export class LocalVaultDriver implements VaultBackend {
 
   /** Public metadata only — never the secret. Populated by `open()`. */
   #index = new Map<string, Omit<VaultEntry, "secret">>();
+  /** Human-authored permission to create accounts. Never written by an agent. */
+  #registrations = new Map<string, RegistrationPolicy>();
   readonly #grants = new Map<
     string,
     { entryId: string; generation: number; expiresAt: number }
@@ -69,6 +81,11 @@ export class LocalVaultDriver implements VaultBackend {
   readonly #issued = new Map<string, number[]>();
   #session: Session | undefined;
   #opened = false;
+  /** In-flight registrations: a generated password with nowhere to live yet. */
+  readonly #pending = new Map<
+    string,
+    { siteId: string; password: string; expiresAt: number }
+  >();
 
   constructor(opts: LocalVaultDriverOptions) {
     this.#opts = opts;
@@ -84,7 +101,8 @@ export class LocalVaultDriver implements VaultBackend {
    * browser and believes the thing is working.
    */
   async open(): Promise<void> {
-    const entries = await this.#decrypt();
+    const { entries, registrations } = await this.#decrypt();
+    this.#registrations = new Map(registrations.map((r) => [r.id, r]));
     this.#index = new Map(
       entries.map((e) => [
         e.id,
@@ -104,9 +122,10 @@ export class LocalVaultDriver implements VaultBackend {
   capabilities(): Capabilities {
     return {
       fills: true,
-      // A local file has no approval queue, no central audit and no shared
-      // policy to report on. Absent rather than present-and-failing.
-      registration: false,
+      // Available exactly when a human has written at least one policy. A
+      // backend with none should not advertise the tool: an agent that can see
+      // it will call it, and be refused for a reason it cannot act on.
+      registration: this.#registrations.size > 0,
       checkout: false,
       signing: false,
       hitl: false,
@@ -192,7 +211,7 @@ export class LocalVaultDriver implements VaultBackend {
 
     // Decrypt now, for this one fill, rather than holding plaintext for the
     // life of the process.
-    const entries = await this.#decrypt();
+    const { entries } = await this.#decrypt();
     try {
       const entry = entries.find((e) => e.id === record.entryId);
       if (!entry) throw new Error("binding no longer exists in the vault file");
@@ -202,6 +221,114 @@ export class LocalVaultDriver implements VaultBackend {
       // why the window is kept short rather than treated as safe.
       entries.length = 0;
     }
+  }
+
+  /**
+   * Begin one account creation.
+   *
+   * The agent names a pre-authorised site and nothing else. Everything that
+   * decides where a credential ends up — host, signup URL, username, selectors
+   * — comes from the policy a human wrote.
+   *
+   * The password is generated here and held in this process. It is not in the
+   * returned grant, because that object is shaped by what the agent may see.
+   */
+  async beginRegistration(req: RegistrationRequest): Promise<RegistrationDecision> {
+    const policy = this.#registrations.get(req.siteId);
+    // Same answer as "not allowed": which sites are pre-authorised is not
+    // something an agent gets to enumerate by probing ids.
+    if (!policy) {
+      return { kind: "denied", reason: "policy_denied", message: "not permitted" };
+    }
+    if (!this.#session) {
+      return { kind: "denied", reason: "session_expired", message: "no open session" };
+    }
+    // One at a time. Two concurrent registrations against one site produce two
+    // accounts, and only one of them ends up in the vault.
+    if ([...this.#pending.values()].some((p) => p.siteId === policy.id)) {
+      return { kind: "denied", reason: "fill_in_progress", message: "already registering" };
+    }
+
+    const registrationId = randomUUID();
+    this.#pending.set(registrationId, {
+      siteId: policy.id,
+      password: generatePassword(policy.passwordPolicy ?? {}),
+      expiresAt: Date.now() + 5 * 60 * 1000,
+    });
+
+    return {
+      kind: "registration_grant",
+      registrationId,
+      signupUrl: policy.signupUrl,
+      username: policy.username,
+      usernameSelector: policy.usernameSelector,
+      passwordSelector: policy.passwordSelector,
+      ...(policy.submitSelector ? { submitSelector: policy.submitSelector } : {}),
+      success: policy.success,
+    };
+  }
+
+  /**
+   * The generated password, for typing. Same contract as `consumeFill`.
+   *
+   * Not single-use: a site may reject the password and the engine may retype it
+   * after a correction. It is discarded by commit or cancel, and expires with
+   * the pending registration.
+   */
+  async takeRegistrationSecret(registrationId: string): Promise<SecretHandle> {
+    const pending = this.#pending.get(registrationId);
+    if (!pending) throw new Error("no such registration");
+    if (Date.now() > pending.expiresAt) {
+      this.#pending.delete(registrationId);
+      throw new Error("registration expired");
+    }
+    return SecretHandle.adopt(
+      new TextEncoder().encode(pending.password),
+      `registration:${pending.siteId}`,
+    );
+  }
+
+  /**
+   * Write the credential, now that the site has accepted it.
+   *
+   * Called only after the engine has confirmed success. Committing earlier
+   * would store a password the site rejected, and the failure would surface
+   * weeks later as a fill that cannot log in.
+   *
+   * Re-reads and rewrites the file, so the new entry is encrypted under the
+   * same passphrase and lands with the rest.
+   */
+  async commitRegistration(registrationId: string): Promise<{ bindingId: string }> {
+    const pending = this.#pending.get(registrationId);
+    if (!pending) throw new Error("no such registration");
+    const policy = this.#registrations.get(pending.siteId);
+    if (!policy) throw new Error("registration policy has gone");
+
+    const contents = await this.#decrypt();
+    if (contents.entries.some((e) => e.id === policy.id)) {
+      this.#pending.delete(registrationId);
+      throw new Error(`a credential for ${policy.id} already exists; remove it first`);
+    }
+    contents.entries.push({
+      id: policy.id,
+      secret: pending.password,
+      loginUrl: policy.loginUrl,
+      allowedHosts: policy.allowedHosts,
+    });
+    await this.#write(contents);
+
+    this.#pending.delete(registrationId);
+    this.#index.set(policy.id, {
+      id: policy.id,
+      loginUrl: policy.loginUrl,
+      allowedHosts: policy.allowedHosts,
+    });
+    return { bindingId: policy.id };
+  }
+
+  /** Discard a registration. The generated password is never written. */
+  async cancelRegistration(registrationId: string): Promise<void> {
+    this.#pending.delete(registrationId);
   }
 
   async audit(event: AuditEvent): Promise<void> {
@@ -218,7 +345,23 @@ export class LocalVaultDriver implements VaultBackend {
     };
   }
 
-  async #decrypt(): Promise<VaultEntry[]> {
+  /**
+   * Re-encrypt the whole vault.
+   *
+   * Written to a temporary file in the same directory and renamed over the
+   * original, because a partial write here loses every credential in the file —
+   * rename is atomic within a filesystem, a truncating write is not. Mode 0600
+   * on the temp file too: it holds the same ciphertext, and briefly existing
+   * world-readable is still world-readable.
+   */
+  async #write(contents: VaultContents): Promise<void> {
+    const file = await sealVault(contents, this.#opts.passphrase);
+    const tmp = `${this.#opts.path}.${randomUUID()}.tmp`;
+    await writeFile(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+    await rename(tmp, this.#opts.path);
+  }
+
+  async #decrypt(): Promise<VaultContents> {
     const raw = await readFile(this.#opts.path, "utf8");
     let file: VaultFile;
     try {
