@@ -8,8 +8,8 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, three backends, and governed account registration. 212 tests here,
-> seven of them against a launched Chromium, plus the vault half.
+> toolset, three backends, and governed account registration. 217 tests here,
+> twelve of them against a launched Chromium, plus the vault half.
 >
 > **The server side is implemented**, end to end:
 >
@@ -246,6 +246,13 @@ rejected password stores nothing, one that an unrecognisable outcome stores
 nothing, and one that logs in afterwards with what was stored. Breaking the
 verdict check so it commits regardless turns two of them red; storing a freshly
 generated password instead of the typed one turns the other two red.
+
+Five more go through `startBridge` and the MCP tool itself, because a path
+exercised only in pieces is a path nobody has run — that is exactly how a
+broken session handshake survived thirty passing production assertions. One of
+them passes `signup_url`, `username` and `password` alongside `site_id` and
+asserts the signup still happens where the policy says, with the policy's
+username. Wiring the tool to honour the agent's url turns it red.
 
 **What it does not do yet.** Email verification. If a site requires clicking a
 link in an inbox, this will report `no_success_signal` and store nothing —
