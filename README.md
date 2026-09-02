@@ -8,7 +8,7 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, three backends, and governed account registration. 227 tests here,
+> toolset, three backends, and governed account registration. 228 tests here,
 > thirteen of them against a launched Chromium, plus the vault half.
 >
 > **The server side is implemented**, end to end:
@@ -401,10 +401,16 @@ community backend `request_checkout` is simply not registered.
 
 ```bash
 pnpm install
-pnpm typecheck     # tsc -b across the workspace
-pnpm test          # vitest
-pnpm ci            # both, as CI runs them
+pnpm typecheck       # tsc -b across the workspace
+pnpm typecheck:tests # the tests, which the build config excludes
+pnpm test            # vitest
+pnpm verify          # all three, as CI runs them
 ```
+
+The tests get their own typecheck pass because the build config excludes them
+from `dist`, which left them unchecked entirely. `startBridge({ args })` was
+being passed by three test files against an options type that never declared
+it — dropped in silence, and only fatal on a machine with no display.
 
 The suite includes mutation-verified guards. Each of these fails a specific
 test rather than passing quietly: making `toJSON` return plaintext, removing

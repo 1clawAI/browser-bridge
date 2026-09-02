@@ -39,9 +39,9 @@ function backend(): VaultBackend {
     capabilities: () => ({ fills: true }),
     openSession: async () => ({ id: "s1" }) as never,
     closeSession: async () => {},
-    authorizeFill: async () => ({ kind: "grant", ...GRANT }) as never,
+    authorizeFill: async () => ({ ...GRANT }) as never,
     consumeFill: async () => SecretHandle.fromUtf8(PASSWORD),
-    audit: async (e) => void audits.push(e),
+    audit: async (e: unknown) => void audits.push(e),
     policySnapshot: async () => ({}) as never,
   } as unknown as VaultBackend;
 }
@@ -155,7 +155,7 @@ describe("the assembled bridge", () => {
     let seen = "";
     back.authorizeFill = async (r: { sessionId: string }) => {
       seen = r.sessionId;
-      return { kind: "grant", ...GRANT };
+      return { ...GRANT };
     };
 
     bridge = await startBridge({

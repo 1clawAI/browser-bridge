@@ -5,6 +5,9 @@ import { existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import WebSocket from "ws";
+import { startBridge } from "./bridge.js";
+import { MockVaultDriver } from "./drivers/mock.js";
 import { PipeCdpTransport } from "./pipe-transport.js";
 
 /**
@@ -192,4 +195,49 @@ describe.skipIf(HAVE_CHROME)("against a real Chromium", () => {
     // Visible rather than silent: set ONECLAW_BRIDGE_CHROME to run it.
     expect(HAVE_CHROME).toBe(false);
   });
+});
+
+describe("launch flags given to startBridge", () => {
+  /**
+   * That the composition root forwards them at all.
+   *
+   * `BridgeOptions` did not have an `args` field. Three test files passed one
+   * anyway and it was dropped on the floor: silently on a desktop, where a
+   * visible window is fine, and fatally on a CI runner with no display, where
+   * Chromium exits 1. Nothing caught it, because the tests are not typechecked
+   * and no test asserted the forwarding.
+   *
+   * Typechecking the tests — now gated in CI — catches an option that does not
+   * exist. It cannot catch one that exists and is never passed on, which is the
+   * same failure with a nicer type signature. So this asserts the effect: ask
+   * for headless, and the browser that comes back has to be a headless one.
+   */
+  it.skipIf(!HAVE_CHROME)("reach Chromium, so --headless=new produces a headless browser", async () => {
+    const bridge = await startBridge({
+      executablePath: CHROME,
+      backend: new MockVaultDriver({ bindings: [] }),
+      host: "127.0.0.1",
+      port: 0,
+      args: LAUNCH_ARGS,
+    });
+    // Asked over the gate, as a framework would — the transport is not public,
+    // and handing a client the raw pipe is the one thing this package will not
+    // do. Browser.getVersion is allowlisted precisely so clients can attach.
+    const ws = new WebSocket(bridge.url);
+    try {
+      await new Promise((res, rej) => {
+        ws.once("open", res);
+        ws.once("error", rej);
+      });
+      const reply = await new Promise<{ result?: { userAgent?: string } }>((resolve) => {
+        ws.once("message", (d) => resolve(JSON.parse(String(d))));
+        ws.send(JSON.stringify({ id: 1, method: "Browser.getVersion" }));
+      });
+      const ua = String(reply.result?.userAgent ?? "");
+      expect(ua, "not headless — the flag never reached the browser").toContain("Headless");
+    } finally {
+      ws.close();
+      await bridge.close();
+    }
+  }, 30_000);
 });

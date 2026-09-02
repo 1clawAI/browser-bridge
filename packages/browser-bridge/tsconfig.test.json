@@ -1,0 +1,10 @@
+{
+  // Typechecks the tests, which the build config excludes so they stay out of
+  // dist. Nothing checked them before, and a `startBridge({ args })` that the
+  // options type never declared went straight through: TypeScript's excess
+  // property check would have caught it on the first keystroke.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}

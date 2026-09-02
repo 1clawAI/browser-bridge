@@ -79,8 +79,9 @@ describe("SaasDriver", () => {
   it("does not implement capability-gated methods it does not declare", () => {
     // Implementing them while declaring the capability false is how a gate ends
     // up bypassable by a caller that ignores capabilities().
-    expect(driver.beginRegistration).toBeUndefined();
-    expect(driver.commitRegistration).toBeUndefined();
+    const present = driver as unknown as Record<string, unknown>;
+    expect(present.beginRegistration).toBeUndefined();
+    expect(present.commitRegistration).toBeUndefined();
   });
 
   it("sends the bridge credential as its own header, never as the bearer or in a URL", async () => {
@@ -111,7 +112,7 @@ describe("SaasDriver", () => {
     const bearers: string[] = [];
     const d = openedSession(async (_url, init) => {
       const h = (init as RequestInit).headers as Record<string, string>;
-      bearers.push(h.authorization);
+      bearers.push(h.authorization ?? "");
       return new Response(
         JSON.stringify({
           session_id: "s1",
@@ -141,7 +142,7 @@ describe("SaasDriver", () => {
     let bearer = "";
     const d = openedSession(async (_url, init) => {
       const h = (init as RequestInit).headers as Record<string, string>;
-      bearer = h.authorization;
+      bearer = h.authorization ?? "";
       return new Response(
         JSON.stringify({ session_id: "s1", session_token: "bs_tok", expires_at: "" }),
         { status: 200 },

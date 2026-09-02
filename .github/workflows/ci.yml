@@ -33,6 +33,13 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # The build config excludes tests so they stay out of dist, which left the
+      # test sources unchecked entirely. A `startBridge({ args })` that the
+      # options type never declared reached CI as two Chromiums exiting with
+      # code 1 — a typecheck away from being caught at the keystroke.
+      - name: Typecheck tests
+        run: pnpm typecheck:tests
+
       - name: Test
         run: pnpm test
 

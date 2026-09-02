@@ -53,6 +53,17 @@ export type BridgeOptions = {
   readonly host?: string;
   readonly port?: number;
   readonly userDataDir?: string;
+  /**
+   * Extra Chromium flags, forwarded to the launch.
+   *
+   * This existed on the transport and not here, so a caller who passed
+   * `--headless=new` to `startBridge` got a visible window and one who passed
+   * `--no-sandbox` got a browser that exited immediately. Both are silent: the
+   * option is simply gone. It cost a red CI run to find, because the desktop
+   * where the tests were written is the one environment where dropping the
+   * flags still works.
+   */
+  readonly args?: readonly string[];
   /** Injectable so the whole bridge can be driven by a fake in tests. */
   readonly transport?: CdpTransport;
 };
@@ -176,6 +187,7 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
     PipeCdpTransport.launch({
       executablePath: opts.executablePath,
       ...(opts.userDataDir !== undefined ? { userDataDir: opts.userDataDir } : {}),
+      ...(opts.args !== undefined ? { args: opts.args } : {}),
     });
 
   const backend = opts.backend;

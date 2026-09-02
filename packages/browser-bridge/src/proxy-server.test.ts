@@ -27,7 +27,7 @@ function connect(url: string, headers: Record<string, string> = {}) {
   return new Promise<{ ok: boolean; status?: number; ws?: WebSocket }>((resolve) => {
     const ws = new WebSocket(url, { headers });
     ws.on("open", () => resolve({ ok: true, ws }));
-    ws.on("unexpected-response", (_req, res) => resolve({ ok: false, status: res.statusCode }));
+    ws.on("unexpected-response", (_req, res) => resolve(res.statusCode === undefined ? { ok: false } : { ok: false, status: res.statusCode }));
     ws.on("error", () => resolve({ ok: false }));
   });
 }

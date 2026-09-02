@@ -3,12 +3,15 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "ci": "pnpm typecheck && pnpm test"
+    "typecheck:tests": "pnpm -r --if-present typecheck:tests",
+    "verify": "pnpm typecheck && pnpm typecheck:tests && pnpm test"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

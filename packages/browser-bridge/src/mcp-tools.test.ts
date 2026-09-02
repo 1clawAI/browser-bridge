@@ -50,6 +50,7 @@ const ctx = (b: VaultBackend, execute?: (d: FillDecision) => Promise<ToolResult>
     tabOrigin: "https://app.example.com",
     frameOrigin: "https://app.example.com",
     formActionOrigin: "https://app.example.com",
+    frameId: "frame-1",
     generation: 1,
   }),
 });
