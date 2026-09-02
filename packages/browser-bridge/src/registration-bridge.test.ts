@@ -119,6 +119,10 @@ const observe = () => ({
   formActionOrigin: origin,
   frameId: "agent-tab",
   generation: 0,
+  formPath: "/login",
+  fieldNames: ["username", "password"],
+  redirectChain: [],
+  currentGeneration: 0,
 });
 
 describe.skipIf(!HAVE_CHROME)("registration through the assembled bridge", () => {

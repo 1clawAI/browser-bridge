@@ -61,7 +61,7 @@ function backend(): VaultBackend & { asked: FillRequest[] } {
     closeSession: async () => {},
     authorizeFill: async (req: FillRequest) => {
       asked.push(req);
-      return { ...GRANT, generation: req.generation };
+      return { ...GRANT, formPath: "/login", fieldNames: ["username", "password"], redirectChain: [], generation: req.generation, currentGeneration: req.generation };
     },
     consumeFill: async () => SecretHandle.fromUtf8(PASSWORD),
     audit: async () => {},
@@ -76,6 +76,10 @@ const truth = () => ({
   formActionOrigin: "https://app.example.com",
   frameId: TARGET,
   generation: 0,
+  formPath: "/login",
+  fieldNames: ["username", "password"],
+  redirectChain: [],
+  currentGeneration: 0,
 });
 
 let bridge: BridgeHandle | undefined;
@@ -201,7 +205,7 @@ describe("an agent lying about the page", () => {
       "request_fill",
       { binding_id: "b1", target_id: TARGET, selector: "#password" },
       // The agent still claims generation 0. The bridge's counter disagrees.
-      () => ({ ...truth(), generation: 0 }),
+      () => ({ ...truth(), formPath: "/login", fieldNames: ["username", "password"], redirectChain: [], generation: 0, currentGeneration: 0 }),
     );
     expect(result.status).toBe("aborted");
     expect(typedText(transport)).toHaveLength(0);

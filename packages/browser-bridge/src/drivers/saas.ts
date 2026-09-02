@@ -117,6 +117,14 @@ export class SaasDriver implements VaultBackend {
         form_action_origin: req.formActionOrigin,
         frame_id: req.frameId,
         generation: req.generation,
+        // The vault requires these four. It used to default them, which turned
+        // the redirect-chain and generation checks off and denied every
+        // fingerprinted binding — and no client sent any of them, so nothing
+        // ever exercised the difference.
+        form_path: req.formPath,
+        field_names: req.fieldNames,
+        redirect_chain: req.redirectChain,
+        current_generation: req.currentGeneration,
       },
     );
     return {

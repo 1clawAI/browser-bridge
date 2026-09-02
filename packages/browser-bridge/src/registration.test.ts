@@ -125,6 +125,10 @@ describe("nothing is stored unless the site accepted it", () => {
       sessionId: "s", bindingId: "acme",
       tabOrigin: "https://acme.example.com", frameOrigin: "https://acme.example.com",
       formActionOrigin: "https://acme.example.com", frameId: "T", generation: 1,
+ formPath: "/login",
+ fieldNames: ["username", "password"],
+ redirectChain: [],
+ currentGeneration: 1,
     } as never);
     expect(decision.kind).toBe("grant");
   }, SLOW);

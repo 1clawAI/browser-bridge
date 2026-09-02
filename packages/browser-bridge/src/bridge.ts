@@ -85,6 +85,14 @@ export type BridgeHandle = {
       formActionOrigin: string;
       frameId: string;
       generation: number;
+      /** Path of the form being filled, for the binding's fingerprint. */
+      formPath: string;
+      /** Field names on that form. A missing expected one means drift. */
+      fieldNames: readonly string[];
+      /** Hosts the login has redirected through, in order. Empty means none. */
+      redirectChain: readonly string[];
+      /** The generation *now*, compared against the one decided against. */
+      currentGeneration: number;
     },
   ): Promise<ToolResult>;
   close(): Promise<void>;

@@ -234,6 +234,10 @@ describe.skipIf(!HAVE_CHROME)("a fill logs in, and the agent gets the session", 
         formActionOrigin: origin,
         frameId: agentTarget,
         generation: 0,
+        formPath: "/login",
+        fieldNames: ["username", "password"],
+        redirectChain: [],
+        currentGeneration: 0,
       }),
     );
     expect(result).toMatchObject({ status: "filled" });

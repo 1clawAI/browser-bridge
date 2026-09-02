@@ -67,6 +67,25 @@ export type FillRequest = {
   readonly frameId: string;
   /** Monotonic per-target counter; invalidated by navigation. See TOCTOU handling. */
   readonly generation: number;
+  /**
+   * Path of the form being filled, matched against the binding's fingerprint.
+   *
+   * This and the three below were absent from the protocol while the vault
+   * accepted them as optional, so no client ever sent them and the vault
+   * defaulted them: the redirect-chain check ran over an empty list, the
+   * generation check compared a value to itself, and `form_path` defaulted to
+   * "" — which matches no fingerprint pattern, so every fingerprinted binding
+   * was denied. Two checks silently off and one feature that could not work.
+   * They are required here because the vault now requires them.
+   */
+  readonly formPath: string;
+  /** Field names present on that form. A missing expected one means drift. */
+  readonly fieldNames: readonly string[];
+  /** Hosts the login has redirected through, in order. Empty means none. */
+  readonly redirectChain: readonly string[];
+  /** The target's generation as the bridge sees it *now*, to compare against
+   *  `generation` — which is the one the agent's request was decided against. */
+  readonly currentGeneration: number;
 };
 
 export type Grant = {

@@ -52,6 +52,10 @@ const ctx = (b: VaultBackend, execute?: (d: FillDecision) => Promise<ToolResult>
     formActionOrigin: "https://app.example.com",
     frameId: "frame-1",
     generation: 1,
+    formPath: "/login",
+    fieldNames: ["username", "password"],
+    redirectChain: [],
+    currentGeneration: 1,
   }),
 });
 

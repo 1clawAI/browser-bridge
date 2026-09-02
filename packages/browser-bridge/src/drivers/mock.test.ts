@@ -25,6 +25,10 @@ const req = (over: Partial<FillRequest> = {}): FillRequest => ({
   formActionOrigin: "https://app.example.com",
   frameId: "T1",
   generation: 1,
+  formPath: "/login",
+  fieldNames: ["username", "password"],
+  redirectChain: [],
+  currentGeneration: 1,
   ...over,
 });
 
@@ -129,7 +133,7 @@ describe("the mock backend's grants", () => {
 
   it("refuses a grant issued for a page that has since moved", async () => {
     const d = await opened();
-    const grant = await d.authorizeFill(req({ generation: 4 }));
+    const grant = await d.authorizeFill(req({ formPath: "/login", fieldNames: ["username", "password"], redirectChain: [], generation: 4, currentGeneration: 4 }));
     if (grant.kind !== "grant") throw new Error("expected a grant");
     await expect(d.consumeFill({ ...grant, generation: 5 })).rejects.toThrow(/navigated/);
   });
