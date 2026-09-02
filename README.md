@@ -8,8 +8,8 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, three backends, and governed account registration. 208 tests here,
-> three of them against a launched Chromium, plus the vault half.
+> toolset, three backends, and governed account registration. 212 tests here,
+> seven of them against a launched Chromium, plus the vault half.
 >
 > **The server side is implemented**, end to end:
 >
@@ -238,6 +238,14 @@ weeks later when a login fails. So the bridge waits for the success signal you
 described — `--success-sel`, or the URL changing — and if it does not see one it
 **cancels rather than commits**. `{"status":"rejected","reason":"no_success_signal"}`
 means nothing was stored.
+
+**How this is tested.** Four tests drive a real Chromium against a real signup
+form that enforces a password rule and says no when it is not met: one asserts
+the credential stored is byte-for-byte the one the site received, one that a
+rejected password stores nothing, one that an unrecognisable outcome stores
+nothing, and one that logs in afterwards with what was stored. Breaking the
+verdict check so it commits regardless turns two of them red; storing a freshly
+generated password instead of the typed one turns the other two red.
 
 **What it does not do yet.** Email verification. If a site requires clicking a
 link in an inbox, this will report `no_success_signal` and store nothing —
