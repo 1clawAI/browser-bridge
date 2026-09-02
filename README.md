@@ -3,7 +3,7 @@
 Governed credential fill for AI agents. The agent drives the browser; it never
 sees the password.
 
-> **Status: v0.1, public** — [1clawAI/browser-bridge](https://github.com/1clawAI/browser-bridge), Apache-2.0.
+> **Status: v0.1, published** — [1clawAI/browser-bridge](https://github.com/1clawAI/browser-bridge), Apache-2.0, on npm as [`@1claw/browser-bridge`](https://www.npmjs.com/package/@1claw/browser-bridge).
 >
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
@@ -56,6 +56,19 @@ sees the password.
 > TOCTOU generation was bumped under a CDP *session* id and read under a
 > *target* id, so the two counters never met and a grant survived the navigation
 > it existed to be invalidated by.
+
+## Install
+
+```bash
+npm install -g @1claw/browser-bridge
+```
+
+Or from source — the demo runs with no 1Claw account:
+
+```bash
+pnpm install && pnpm build
+node packages/browser-bridge/examples/demo.mjs
+```
 
 ## Where this sits
 
