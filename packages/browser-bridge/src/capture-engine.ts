@@ -137,8 +137,9 @@ export class CaptureEngine {
     settleMs: number,
   ): Promise<string | undefined> {
     const sel = JSON.stringify(source.valueSelector);
-    const read =
-      source.valueProp === "value"
+    const read = source.valueAttr
+      ? `document.querySelector(${sel})?.getAttribute(${JSON.stringify(source.valueAttr)}) ?? ""`
+      : source.valueProp === "value"
         ? `document.querySelector(${sel})?.value ?? ""`
         : source.valueProp === "textContent"
           ? `(document.querySelector(${sel})?.textContent ?? "").trim()`

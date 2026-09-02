@@ -31,7 +31,7 @@ const flag = (n) => { const i = rest.indexOf(`--${n}`); return i > -1 ? rest[i +
 function usage(code = 2) {
   console.error(`usage:
   1claw-vault init   <file>
-  1claw-vault add    <file> --id <id> --url <login-url> --hosts a.com,.b.com [--sso idp.com]
+  1claw-vault add    <file> --id <id> --url <login-url> --hosts a.com,.b.com [--sso idp.com] [--username <u> --user-sel <css>]
   1claw-vault list   <file>
   1claw-vault remove <file> --id <id>
   1claw-vault allow-capture <file> --id <id> --url <page-url> --login <login-url> \\
@@ -117,7 +117,15 @@ try {
     if (doc.entries.some((e) => e.id === id)) { console.error(`${id} already exists`); process.exit(2); }
     const secret = await readStdin();
     if (!secret) { console.error("empty secret"); process.exit(2); }
-    doc.entries.push({ id, secret, loginUrl: url, allowedHosts: hosts, ...(flag("sso") ? { ssoHosts: parseHosts(flag("sso"), "--sso") } : {}) });
+    doc.entries.push({
+      id, secret, loginUrl: url, allowedHosts: hosts,
+      ...(flag("sso") ? { ssoHosts: parseHosts(flag("sso"), "--sso") } : {}),
+      // Optional username, for login forms that do not pre-fill it. Not a
+      // secret — the bridge types it before the password.
+      ...(flag("username") ? { username: flag("username") } : {}),
+      ...(flag("user-sel") ? { usernameSelector: flag("user-sel") } : {}),
+      ...(flag("submit-sel") ? { submitSelector: flag("submit-sel") } : {}),
+    });
     await save(doc, pass);
     console.error(`added ${id}`);
   } else if (cmd === "list") {
@@ -209,6 +217,7 @@ try {
       id, captureUrl: url, loginUrl: login, allowedHosts: hosts, valueSelector: valueSel,
       ...(flag("generate-sel") ? { generateSelector: flag("generate-sel") } : {}),
       ...(valueProp ? { valueProp } : {}),
+      ...(flag("value-attr") ? { valueAttr: flag("value-attr") } : {}),
       ...(flag("entry-id") ? { entryId } : {}),
     });
     await save(doc, pass);

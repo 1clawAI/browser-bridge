@@ -85,6 +85,8 @@ export type CapturePolicy = {
   readonly valueSelector: string;
   /** Read `.value` or `.textContent`; omit to take whichever is non-empty. */
   readonly valueProp?: "value" | "textContent";
+  /** Read a named attribute instead (e.g. `data-clipboard-text`); wins over valueProp. */
+  readonly valueAttr?: string;
   /** Vault id the captured secret is written under. Defaults to `id`. */
   readonly entryId?: string;
   /** Login URL recorded on the resulting entry, so a later fill is governed too. */
@@ -97,6 +99,14 @@ export type VaultEntry = {
   readonly loginUrl: string;
   readonly allowedHosts: readonly string[];
   readonly ssoHosts?: readonly string[];
+  /**
+   * A username to type before the password, for login forms that do not
+   * pre-fill it. Not a secret. Both must be present to be used.
+   */
+  readonly username?: string;
+  readonly usernameSelector?: string;
+  /** A submit button to click, for forms that need the button's own click. */
+  readonly submitSelector?: string;
 };
 
 /**

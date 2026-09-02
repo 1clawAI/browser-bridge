@@ -102,6 +102,20 @@ export type Grant = {
   readonly loginUrl: string;
   readonly expiresAt: string;
   readonly generation: number;
+  /**
+   * A username to type before the password, for login forms that do not
+   * pre-fill it. Not a secret — but typed by the bridge in the windowed page,
+   * not by the agent, so the agent still never scripts the login. Both must be
+   * present for the username to be typed.
+   */
+  readonly username?: string;
+  readonly usernameSelector?: string;
+  /**
+   * A specific submit button to click, for forms that need the button's own
+   * click rather than a bare form submit (an ASP.NET postback, a JS handler
+   * bound to the button). Omit to submit generically.
+   */
+  readonly submitSelector?: string;
 };
 
 export type Denied = {
@@ -224,6 +238,12 @@ export type CaptureSource = {
    * Omit to take whichever is non-empty.
    */
   readonly valueProp?: "value" | "textContent";
+  /**
+   * Read a named attribute instead — for a copy button that carries the secret
+   * in `data-clipboard-text`, say, next to a label the textContent would drag
+   * in. Wins over `valueProp` when set.
+   */
+  readonly valueAttr?: string;
 };
 
 /**

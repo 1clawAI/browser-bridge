@@ -119,6 +119,9 @@ export class LocalVaultDriver implements VaultBackend {
           loginUrl: e.loginUrl,
           allowedHosts: e.allowedHosts,
           ...(e.ssoHosts ? { ssoHosts: e.ssoHosts } : {}),
+          ...(e.username ? { username: e.username } : {}),
+          ...(e.usernameSelector ? { usernameSelector: e.usernameSelector } : {}),
+          ...(e.submitSelector ? { submitSelector: e.submitSelector } : {}),
         },
       ]),
     );
@@ -207,6 +210,9 @@ export class LocalVaultDriver implements VaultBackend {
       loginUrl: entry.loginUrl,
       expiresAt: new Date(now + this.#grantTtlMs).toISOString(),
       generation: req.generation,
+      ...(entry.username ? { username: entry.username } : {}),
+      ...(entry.usernameSelector ? { usernameSelector: entry.usernameSelector } : {}),
+      ...(entry.submitSelector ? { submitSelector: entry.submitSelector } : {}),
     };
   }
 
@@ -375,6 +381,7 @@ export class LocalVaultDriver implements VaultBackend {
         ...(policy.generateSelector ? { generateSelector: policy.generateSelector } : {}),
         valueSelector: policy.valueSelector,
         ...(policy.valueProp ? { valueProp: policy.valueProp } : {}),
+        ...(policy.valueAttr ? { valueAttr: policy.valueAttr } : {}),
       },
       entryId: policy.entryId ?? policy.id,
     };
