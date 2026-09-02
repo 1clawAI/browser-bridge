@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { CdpGate } from "./cdp-policy.js";
+import { CdpGate, redactEventForAgent } from "./cdp-policy.js";
 
 const TARGET = "target-1";
 const OTHER = "target-2";
@@ -133,9 +133,63 @@ describe("event suppression", () => {
     expect(Object.keys(gate)).toEqual([]);
   });
 
-  it("never forwards extra-info events, which carry post data and Set-Cookie", () => {
+  it("strips the cookies out of the extra-info events rather than withholding them", () => {
+    // These two were refused outright, for the right reason: they carry the
+    // raw `Cookie` and `Set-Cookie` headers, and they are push events, so an
+    // agent that enabled the Network domain before a fill would receive them
+    // without issuing a single command during the window.
+    //
+    // Refusing them also broke every stock client. A framework will not settle
+    // a navigation until its network bookkeeping sees the ExtraInfo pair, so
+    // `page.goto()` hung while `page.content()` returned the new document.
+    //
+    // What a client needs is that the event happened. What it must not have is
+    // the headers. So they are forwarded emptied — and emptied, not deleted,
+    // because a client reads `Object.keys(headers)` without checking the field
+    // is there, and removing it crashes the client instead of protecting
+    // anything.
+    for (const method of [
+      "Network.requestWillBeSentExtraInfo",
+      "Network.responseReceivedExtraInfo",
+    ]) {
+      // The field set Chromium actually sends, read off a live browser rather
+      // than from the protocol docs — that is how `blockedCookies` was found
+      // missing from the strip list, and `rawHeaders`, which is in the docs,
+      // found never to be sent at all.
+      const out = redactEventForAgent(method, {
+        requestId: "req-1",
+        headers: { cookie: "sid=hunter2", authorization: "Bearer tok" },
+        headersText: "set-cookie: sid=hunter2",
+        associatedCookies: [{ cookie: { name: "sid", value: "hunter2" }, blockedReasons: [] }],
+        blockedCookies: [{ cookie: { name: "sid", value: "hunter2" }, blockedReasons: ["x"] }],
+        exemptedCookies: [{ cookie: { name: "sid", value: "hunter2" } }],
+        statusCode: 200,
+      });
+
+      const serialised = JSON.stringify(out);
+      expect(serialised, `${method} leaked a credential`).not.toContain("hunter2");
+      expect(serialised).not.toContain("Bearer tok");
+      // The shape survives, so the client's state machine still advances.
+      expect((out as { requestId?: string }).requestId).toBe("req-1");
+      // Fields that carry no credential material survive untouched, so the
+      // client still has what it needs to match the event to its request.
+      if (method === "Network.responseReceivedExtraInfo") {
+        expect((out as { statusCode?: number }).statusCode).toBe(200);
+      }
+      expect(out).toHaveProperty("headers");
+      expect(Object.keys((out as { headers: object }).headers)).toHaveLength(0);
+      expect((out as { associatedCookies: unknown[] }).associatedCookies).toEqual([]);
+    }
+  });
+
+  it("leaves events it does not redact exactly as they came", () => {
+    const evt = { requestId: "r", headers: { cookie: "keep-me" } };
+    expect(redactEventForAgent("Network.responseReceived", evt)).toBe(evt);
+  });
+
+  it("still refuses the events that carry a body outright", () => {
     const gate = new CdpGate();
-    for (const method of ["Network.requestWillBeSentExtraInfo", "Network.responseReceivedExtraInfo"]) {
+    for (const method of ["Debugger.paused", "Debugger.scriptParsed"]) {
       expect(gate.shouldForwardEvent({ method, targetId: OTHER }), method).toBe(false);
     }
   });

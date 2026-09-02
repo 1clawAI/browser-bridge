@@ -1,7 +1,7 @@
 // Copyright (C) 2026 1Claw
 // SPDX-License-Identifier: Apache-2.0
 
-import { CdpGate, type CdpDecision } from "./cdp-policy.js";
+import { CdpGate, redactEventForAgent, type CdpDecision } from "./cdp-policy.js";
 import type { CdpMessage, CdpTransport } from "./cdp-transport.js";
 
 /**
@@ -226,23 +226,55 @@ export class CdpProxy {
       const ctx = this.#contexts.get(clientId);
       if (typeof created === "string" && ctx !== undefined) {
         this.#targetContexts.set(created, ctx);
+        const url = typeof msg.params?.url === "string" ? msg.params.url : "";
+        const targetInfo = {
+          targetId: created,
+          type: "page",
+          title: "",
+          url,
+          attached: false,
+          browserContextId: ctx,
+        };
+
         // Tell this client — and only this client — that its page exists. A
         // framework that asked for discovery is waiting for exactly this before
         // it will consider the page usable.
         if (this.#discovering.has(clientId)) {
           this.#sinks.get(clientId)?.({
             method: "Target.targetCreated",
-            params: {
-              targetInfo: {
-                targetId: created,
-                type: "page",
-                title: "",
-                url: typeof msg.params?.url === "string" ? msg.params.url : "",
-                attached: false,
-                browserContextId: ctx,
-              },
-            },
+            params: { targetInfo },
           });
+        }
+
+        // Attach on the client's behalf, and tell it.
+        //
+        // A client that asked for auto-attach does not attach to its own pages;
+        // it waits to be told it has been attached, and builds its Page object
+        // out of the sessionId in that event. Puppeteer's newPage() hangs
+        // forever without it — thirty seconds of a test timing out with no
+        // error, which is what the first version of this answerer did.
+        //
+        // The attach is real, not synthesised: Chromium issues the session, so
+        // the sessionId in the event is one that works, and it is recorded as
+        // this client's so the ownership check lets it be used. Faking an id
+        // here would produce a client that believes it has a page and is
+        // refused on every command it sends to it.
+        if (this.#autoAttaching.has(clientId)) {
+          const attached = await this.#transport.send({
+            method: "Target.attachToTarget",
+            params: { targetId: created, flatten: true },
+          });
+          const sessionId = (attached.result as { sessionId?: unknown } | undefined)?.sessionId;
+          if (typeof sessionId === "string") {
+            // Recorded, not announced. Chromium emits its own
+            // Target.attachedToTarget for a real attach, and the event filter
+            // delivers it to whoever owns the session — which is why the
+            // ownership has to be recorded first. Emitting one here as well
+            // gave the client two, and two attach events for one target build
+            // two Page objects, of which only one is listening for the replies.
+            this.#sessionTargets.set(sessionId, created);
+            this.#sessionOwners.set(sessionId, clientId);
+          }
         }
       }
     }
@@ -302,6 +334,19 @@ export class CdpProxy {
     return undefined;
   }
 
+  /**
+   * Strip the credential-bearing fields from an event forwarded for its shape.
+   *
+   * The two Network ExtraInfo events are delivered so a stock client's network
+   * bookkeeping can settle a navigation, and stripped so the agent never sees
+   * the `Cookie` and `Set-Cookie` headers that ride along with them.
+   */
+  #redacted(evt: CdpMessage): CdpMessage {
+    if (!evt.method) return evt;
+    const params = redactEventForAgent(evt.method, evt.params);
+    return params === evt.params ? evt : { ...evt, ...(params !== undefined ? { params } : {}) };
+  }
+
   /** Narrow a Target.getTargets reply to the caller's own context. */
   #onlyOwnTargets(clientId: ClientId, reply: CdpMessage): CdpMessage {
     const ctx = this.#contexts.get(clientId);
@@ -332,9 +377,18 @@ export class CdpProxy {
    */
   async #answerHandshake(clientId: ClientId, msg: CdpMessage): Promise<ProxyReply | undefined> {
     const id = msg.id;
+    // Echo the sessionId. A reply to a session-scoped command carries the
+    // session it belongs to, and a client routes it by that: Playwright asserts
+    // when a reply arrives on the root session with an id the root never sent,
+    // which is what every locally-answered command looked like. Puppeteer
+    // tolerated it, so only one of the two clients showed the bug.
     const ok = (result: Record<string, unknown>): ProxyReply => ({
       kind: "forward",
-      message: { ...(id !== undefined ? { id } : {}), result },
+      message: {
+        ...(id !== undefined ? { id } : {}),
+        ...(typeof msg.sessionId === "string" ? { sessionId: msg.sessionId } : {}),
+        result,
+      },
     });
 
     switch (msg.method) {
@@ -374,6 +428,28 @@ export class CdpProxy {
         }
         return reply;
       }
+
+      case "Target.getBrowserContexts":
+        // Puppeteer's very next call after getVersion. Chromium would answer
+        // with every context in the browser — one line per other client — so it
+        // is answered here with the caller's own and nothing else.
+        return ok({ browserContextIds: [this.#contexts.get(clientId)].filter(Boolean) });
+
+      case "Browser.setDownloadBehavior":
+        // Playwright sends this on connect. Accepted and not forwarded: the
+        // parameters name a download directory and a behaviour, and forwarding
+        // them lets any client redirect the whole browser's downloads to a path
+        // it chooses. Downloads are not part of what the bridge offers, so
+        // there is nothing to do and nothing to pass on.
+        return ok({});
+
+      case "Runtime.runIfWaitingForDebugger":
+        // Nothing is ever waiting. Puppeteer asks for auto-attach with
+        // `waitForDebuggerOnStart`, and that request is answered here and never
+        // forwarded, so Chromium never pauses a target on creation and there is
+        // no debugger to release. Refusing it made Puppeteer's own reply
+        // handling fail on a command whose work was already done.
+        return ok({});
 
       case "Target.setAutoAttach":
         // Accepted and remembered. Forwarding would have Chromium attach the
@@ -450,7 +526,7 @@ export class CdpProxy {
     if (typeof evt.sessionId === "string") {
       const owner = this.#sessionOwners.get(evt.sessionId);
       if (owner === undefined) return;
-      this.#sinks.get(owner)?.(evt);
+      this.#sinks.get(owner)?.(this.#redacted(evt));
       return;
     }
 
