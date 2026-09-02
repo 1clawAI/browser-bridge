@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { LocalVaultDriver } from "./drivers/local.js";
 import { openVault, sealVault, type CapturePolicy } from "./drivers/local-vault-file.js";
 import { SecretHandle } from "./secret-handle.js";
@@ -131,4 +131,56 @@ describe("nothing is stored unless the value was read", () => {
       d.commitCapture(g2.captureId, SecretHandle.adopt(new TextEncoder().encode("second"), "t")),
     ).rejects.toThrow(/already exists/);
   }, SLOW);
+});
+
+describe("the agent cannot watch the read", () => {
+  /**
+   * The capture engine blocks the agent's own target before any secret exists,
+   * and nothing tested it.
+   *
+   * This is the same control the fill engine has, for the same reason: a
+   * listener the agent installed *earlier* needs no CDP command during the
+   * window to observe what happens, so the window has to be open before the
+   * value exists rather than around the read itself. Deleting
+   * `gate.openFillWindow(agentTargetId)` left every capture test green — the
+   * suite proved the secret does not come back through the return value, and
+   * said nothing about whether the agent could simply watch it being read.
+   */
+  it("windows the agent's target, and the read target too", async () => {
+    const { CaptureEngine } = await import("./capture-engine.js");
+    const { CdpGate } = await import("./cdp-policy.js");
+    const { FakeCdpTransport } = await import("./cdp-transport.js");
+
+    const gate = new CdpGate();
+    const transport = new FakeCdpTransport();
+    const windowed: string[] = [];
+    const realOpen = gate.openFillWindow.bind(gate);
+    vi.spyOn(gate, "openFillWindow").mockImplementation((t: string) => {
+      windowed.push(t);
+      realOpen(t);
+    });
+
+    const engine = new CaptureEngine({
+      transport,
+      gate,
+      browserContextOf: () => "ctx-agent",
+      commit: async () => ({ entryId: "e1" }),
+      cancel: async () => {},
+      settleMs: 1_000,
+    });
+
+    await engine.capture("agent-target", {
+      kind: "capture_grant",
+      captureId: "c1",
+      captureUrl: "https://acme.example.com/settings/api",
+      source: { valueSelector: "#api-key", valueProp: "value" },
+      entryId: "e1",
+    });
+
+    expect(windowed, "the agent's own target was never blocked").toContain("agent-target");
+    expect(
+      windowed.length,
+      "the target the secret is actually read in was left unblocked",
+    ).toBeGreaterThan(1);
+  });
 });

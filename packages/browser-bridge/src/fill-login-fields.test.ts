@@ -137,7 +137,7 @@ describe.skipIf(!HAVE_CHROME)("a fill on a form with an empty username and a but
     const fill = await bridge.callTool(
       "request_fill",
       { binding_id: "acme", target_id: target, selector: "#pass" },
-      () => ({ tabOrigin: origin, frameOrigin: origin, formActionOrigin: origin, frameId: target, generation: 0 }),
+      () => ({ tabOrigin: origin, frameOrigin: origin, formActionOrigin: origin, frameId: target, generation: 0, formPath: "/login", fieldNames: ["username", "password"], redirectChain: [], currentGeneration: 0 }),
     );
     expect(fill).toMatchObject({ status: "filled" });
     expect(JSON.stringify(fill)).not.toContain(PASSWORD);

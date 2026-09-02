@@ -118,8 +118,14 @@ export type VaultEntry = {
  */
 export type VaultContents = {
   readonly entries: VaultEntry[];
-  readonly registrations: RegistrationPolicy[];
-  readonly captures: CapturePolicy[];
+  /**
+   * Optional, because `sealVault` already defaults both to `[]` — a vault with
+   * no registration policies and no capture policies is the ordinary case, and
+   * requiring the keys makes every existing caller pass `captures: []` to say
+   * nothing. The type should describe what the function accepts.
+   */
+  readonly registrations?: RegistrationPolicy[];
+  readonly captures?: CapturePolicy[];
 };
 
 /** The on-disk shape. Everything outside `ciphertext` is public by design. */

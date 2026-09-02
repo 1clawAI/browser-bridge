@@ -109,8 +109,10 @@ export class LocalVaultDriver implements VaultBackend {
    */
   async open(): Promise<void> {
     const { entries, registrations, captures } = await this.#decrypt();
-    this.#registrations = new Map(registrations.map((r) => [r.id, r]));
-    this.#captures = new Map(captures.map((c) => [c.id, c]));
+    // Both default to empty: a vault with no registration or capture policies
+    // is the ordinary case, and the file format does not require the keys.
+    this.#registrations = new Map((registrations ?? []).map((r) => [r.id, r]));
+    this.#captures = new Map((captures ?? []).map((c) => [c.id, c]));
     this.#index = new Map(
       entries.map((e) => [
         e.id,

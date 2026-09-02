@@ -217,6 +217,10 @@ describe.skipIf(!HAVE_CHROME)("register, log in, and capture a generated key", (
       formActionOrigin: origin,
       frameId,
       generation: 0,
+      formPath: "/login",
+      fieldNames: ["username", "password"],
+      redirectChain: [],
+      currentGeneration: 0,
     });
 
     // 1. Register — creates the account, stores the generated password.

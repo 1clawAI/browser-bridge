@@ -8,8 +8,8 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, three backends, and governed account registration. 254 tests here,
-> eighteen of them against a launched Chromium, two of those driving real Puppeteer and Playwright, plus the vault half.
+> toolset, three backends, and governed account registration. 266 tests here,
+> twenty of them against a launched Chromium, two of those driving real Puppeteer and Playwright, plus the vault half.
 >
 > **The server side is implemented**, end to end:
 >
