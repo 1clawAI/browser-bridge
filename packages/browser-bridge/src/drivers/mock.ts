@@ -90,6 +90,7 @@ export class MockVaultDriver implements VaultBackend {
       // Everything else is absent rather than present-and-refusing. A tool that
       // exists and always fails teaches an agent to retry.
       registration: false,
+      capture: false,
       checkout: false,
       signing: false,
       hitl: false,

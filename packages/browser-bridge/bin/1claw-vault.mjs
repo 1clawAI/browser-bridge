@@ -34,6 +34,9 @@ function usage(code = 2) {
   1claw-vault add    <file> --id <id> --url <login-url> --hosts a.com,.b.com [--sso idp.com]
   1claw-vault list   <file>
   1claw-vault remove <file> --id <id>
+  1claw-vault allow-capture <file> --id <id> --url <page-url> --login <login-url> \\
+      --hosts a.com --value-sel <css> [--generate-sel <css>] \\
+      [--value-prop value|textContent] [--entry-id <id>]
 
 hosts: a bare entry matches only itself; a leading dot ('.example.com') matches
 that host and any subdomain. '*' is not a wildcard here and is refused.
@@ -68,7 +71,7 @@ async function readStdin() {
 
 async function load(pass) {
   const doc = await openVault(JSON.parse(await readFile(file, "utf8")), pass);
-  return { entries: doc.entries ?? [], registrations: doc.registrations ?? [] };
+  return { entries: doc.entries ?? [], registrations: doc.registrations ?? [], captures: doc.captures ?? [] };
 }
 async function save(doc, pass) {
   // 0600: a vault the rest of the machine can read is not a vault.
@@ -96,7 +99,7 @@ try {
     const pass = await passphrase();
     const again = process.env.ONECLAW_BRIDGE_VAULT_PASSPHRASE ? pass : await promptHidden("again: ");
     if (pass !== again) { console.error("passphrases do not match"); process.exit(2); }
-    await save({ entries: [], registrations: [] }, pass);
+    await save({ entries: [], registrations: [], captures: [] }, pass);
     console.error(`created ${file}`);
   } else if (cmd === "add") {
     const id = flag("id"), url = flag("url");
@@ -177,6 +180,39 @@ try {
     });
     await save(doc, pass);
     console.error(`allowed signup for ${id} as ${username}`);
+  } else if (cmd === "allow-capture") {
+    // Authorising an agent to capture a secret the site generates (an API key,
+    // a token). Everything it could otherwise choose is fixed here: the page,
+    // the control that generates the value, and where the value is read from.
+    // The agent supplies only --id and the tab it is logged in on.
+    const id = flag("id"), url = flag("url"), login = flag("login");
+    if (!id || !url || !login) usage();
+    const hosts = parseHosts(flag("hosts"), "--hosts");
+    if (hosts.length === 0) { console.error("--hosts must name at least one host"); process.exit(2); }
+    const valueSel = flag("value-sel");
+    if (!valueSel) { console.error("--value-sel is required (where the secret is read from)"); process.exit(2); }
+    for (const [name, u] of [["--url", url], ["--login", login]]) {
+      if (!u.startsWith("https://") && !u.startsWith("http://127.0.0.1")) {
+        console.error(`${name} must be https (http is allowed only for 127.0.0.1)`);
+        process.exit(2);
+      }
+    }
+    const valueProp = flag("value-prop");
+    if (valueProp && valueProp !== "value" && valueProp !== "textContent") {
+      console.error("--value-prop must be 'value' or 'textContent'"); process.exit(2);
+    }
+    const pass = await passphrase();
+    const doc = await load(pass);
+    if (doc.captures.some((c) => c.id === id)) { console.error(`${id} already allowed`); process.exit(2); }
+    const entryId = flag("entry-id") || id;
+    doc.captures.push({
+      id, captureUrl: url, loginUrl: login, allowedHosts: hosts, valueSelector: valueSel,
+      ...(flag("generate-sel") ? { generateSelector: flag("generate-sel") } : {}),
+      ...(valueProp ? { valueProp } : {}),
+      ...(flag("entry-id") ? { entryId } : {}),
+    });
+    await save(doc, pass);
+    console.error(`allowed capture for ${id} -> vault id ${entryId}`);
   } else usage();
 } catch (err) {
   console.error(err instanceof Error ? err.message : String(err));

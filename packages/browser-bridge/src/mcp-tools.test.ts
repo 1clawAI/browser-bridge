@@ -10,11 +10,11 @@ import type { VaultBackend } from "./vault-backend.js";
 const PASSWORD = "hunter2-correct-horse";
 
 const SAAS: Capabilities = {
-  fills: true, registration: false, checkout: true, signing: true,
+  fills: true, registration: false, capture: false, checkout: true, signing: true,
   hitl: true, centralAudit: true, shadowReports: true,
 };
 const COMMUNITY: Capabilities = {
-  fills: true, registration: false, checkout: false, signing: false,
+  fills: true, registration: false, capture: false, checkout: false, signing: false,
   hitl: false, centralAudit: false, shadowReports: false,
 };
 

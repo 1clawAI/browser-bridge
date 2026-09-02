@@ -27,6 +27,12 @@ export type Capabilities = {
   readonly fills: true;
   /** v0.2, and gated by backend *and* policy. */
   readonly registration: boolean;
+  /**
+   * Capture a secret a site generates (an API key, a token) into the vault,
+   * without the agent seeing it. Gated by backend *and* policy, like
+   * registration.
+   */
+  readonly capture: boolean;
   readonly checkout: boolean;
   readonly signing: boolean;
   /** Human-in-the-loop approvals are available and enforceable. */
@@ -189,6 +195,61 @@ export type RegistrationOutcome =
   | { readonly status: "registered"; readonly bindingId: string }
   | { readonly status: "denied"; readonly reason: DenyReason }
   | { readonly status: "rejected"; readonly reason: "site_rejected_password" | "no_success_signal" }
+  | { readonly status: "error"; readonly message: string };
+
+/**
+ * A request to capture a secret the site generates — an API key, an access
+ * token — and store it in the vault, without the agent ever seeing it.
+ *
+ * The mirror image of a fill: a fill types a stored secret *into* a page; a
+ * capture reads a site-generated secret *out* of a page and into the vault. It
+ * carries the same invariant. Like a registration, the agent names only a
+ * pre-authorised site. It does not choose the URL, the control that generates
+ * the value, or where the value is read from — a human authored those, because
+ * whatever is read off the page becomes a stored credential, and an agent that
+ * chose the source would be choosing what gets stored.
+ */
+export type CaptureRequest = {
+  readonly siteId: string;
+};
+
+/** How the bridge produces and then reads the value, all human-authored. */
+export type CaptureSource = {
+  /** A control the bridge clicks to make the secret appear. Omit if it is already shown. */
+  readonly generateSelector?: string;
+  /** Where the value is read from once it exists. */
+  readonly valueSelector: string;
+  /**
+   * Read the element's `.value` (an input) or `.textContent` (a code block).
+   * Omit to take whichever is non-empty.
+   */
+  readonly valueProp?: "value" | "textContent";
+};
+
+/**
+ * Permission to capture one secret.
+ *
+ * Carries no secret — the value does not exist when this is issued, and when it
+ * does the bridge reads it in a windowed page and hands it straight to the
+ * backend, never back through an object the agent could be given.
+ */
+export type CaptureGrant = {
+  readonly kind: "capture_grant";
+  readonly captureId: string;
+  /** From the policy, never the agent. */
+  readonly captureUrl: string;
+  readonly source: CaptureSource;
+  /** The vault id the captured secret is written under. */
+  readonly entryId: string;
+};
+
+export type CaptureDecision = CaptureGrant | Denied;
+
+/** What the agent gets back. An id, never the captured secret. */
+export type CaptureOutcome =
+  | { readonly status: "captured"; readonly entryId: string }
+  | { readonly status: "denied"; readonly reason: DenyReason }
+  | { readonly status: "rejected"; readonly reason: "no_value_found" }
   | { readonly status: "error"; readonly message: string };
 
 export type AuditEvent = {

@@ -51,6 +51,7 @@ function backend(): VaultBackend & { asked: FillRequest[] } {
     capabilities: () => ({
       fills: true,
       registration: false,
+      capture: false,
       checkout: false,
       signing: false,
       hitl: false,

@@ -60,6 +60,7 @@ export class SaasDriver implements VaultBackend {
       // v0.2. Off until the registration flow and its adversarial suite land;
       // the tool is absent rather than present-and-refusing.
       registration: false,
+      capture: false,
       // Off until the vault routes exist. A capability advertised ahead of its
       // endpoint registers a tool that fails on first call, which teaches an
       // agent to retry against a 404.

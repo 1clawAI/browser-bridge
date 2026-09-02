@@ -446,7 +446,7 @@ rejecting only cross-site `Origin`s.
   ```
 
   The community driver has landed too: `LocalVaultDriver`, an AES-256-GCM file keyed by scrypt from a passphrase you hold, with `1claw-vault` to manage it. Three backends now ship, and the adversarial suite is green on all of them — which was always the real bar.
-- **v0.2** — governed credential registration **(done, local backend)**; HITL approval queue, TOTP fill, and registration on the hosted backend still to come
+- **v0.2** — governed credential registration **(done, local backend)** and governed credential **capture** — a fill in reverse: while logged in, the bridge reads a secret the site generates (an API key, a token) in a windowed page and stores it in the vault, without the agent seeing it **(done, local backend; see `examples/full-flow-capture.mjs`)**; HITL approval queue, TOTP fill, and both on the hosted backend still to come
 - **v0.3** — cloud-runtime sidecar (platform trust model)
 
 ## Security
