@@ -8,8 +8,8 @@ sees the password.
 > **Built:** the `VaultBackend` trait, `SecretHandle`, the saas driver, the CDP
 > allowlist gate, the loopback checks, the Chromium pipe transport (`spawn` with
 > fds 3/4 under `--remote-debugging-pipe`), the proxy socket, and the MCP
-> toolset, three backends, and governed account registration. 234 tests here,
-> fifteen of them against a launched Chromium, plus the vault half.
+> toolset, three backends, and governed account registration. 254 tests here,
+> eighteen of them against a launched Chromium, two of those driving real Puppeteer and Playwright, plus the vault half.
 >
 > **The server side is implemented**, end to end:
 >
@@ -341,16 +341,19 @@ reach — which is what this did until it was tested end to end.
 Point your framework's `cdp_url` at the URL the bridge prints. Every command
 crosses the gate; nothing else is attached to Chromium.
 
-**Stock clients work.** Puppeteer and Playwright open a connection by asking the
-browser to describe itself and to start announcing targets — and for a while
-they could not connect at all, because the second half of that handshake is
-refused by design: forwarding `Target.setAutoAttach` or `setDiscoverTargets`
-puts Chromium into a mode where it reports *every* target to whoever asked.
+**Stock clients work, and a test proves it with the real clients.** Puppeteer
+and Playwright could not connect at all for a while. Their handshake asks the
+browser to describe itself and then to start announcing targets, and the second
+half is refused by design: forwarding `Target.setAutoAttach` or
+`setDiscoverTargets` puts Chromium into a mode where it reports *every* target
+to whoever asked.
 
-The proxy now answers that handshake itself. The client gets the replies and
-the target events it needs, and the view it is given contains only its own
-pages. Those commands are still never forwarded, so Chromium is never put into
-global discovery.
+The proxy answers that handshake itself, so the client is satisfied without
+Chromium ever being put into global discovery, and attaches on the client's
+behalf so the session it is handed is real and recorded as its own. Two of the
+tests drive actual `puppeteer-core` and `playwright-core` through
+connect → newPage → goto against a launched Chromium, because a hand-built
+client cannot tell you whether a real one is happy.
 
 ```js
 await puppeteer.connect({ browserWSEndpoint: bridge.url });

@@ -314,3 +314,108 @@ describe("two agents on one real browser", () => {
     }
   }, 30_000);
 });
+
+describe("what crosses the socket to a client", () => {
+  /**
+   * The cookie must not, even though the events that carry it now do.
+   *
+   * `Network.requestWillBeSentExtraInfo` and `responseReceivedExtraInfo` were
+   * refused outright because they carry the raw `Cookie` and `Set-Cookie`
+   * headers. They are forwarded now, with those fields emptied, because no
+   * stock framework will settle a navigation without them.
+   *
+   * A unit test on the redactor proves the function drops the fields it is
+   * given. It cannot prove that what a real Chromium sends about a real
+   * Set-Cookie never reaches a real client — the header could arrive under a
+   * name the redactor does not know. So this reads every frame that crosses
+   * the socket during a genuine cookie-setting navigation and requires the
+   * value to be absent from all of them.
+   *
+   * It exercises three of the four cookie-bearing fields Chromium populates —
+   * removing `headers`, `headersText` or `associatedCookies` from the strip
+   * list turns this red. The fourth, `blockedCookies`, only fills in when a
+   * cookie is actually rejected, which a loopback origin does not do; that
+   * strip is defensive and this test does not cover it.
+   */
+  it.skipIf(!HAVE_CHROME)("never carries a Set-Cookie value to the agent", async () => {
+    const SECRET = "s3cr3t-session-value";
+    const cookieServer = createServer((_req, res) => {
+      res.writeHead(200, {
+        "content-type": "text/html",
+        "set-cookie": `sid=${SECRET}; Path=/; HttpOnly`,
+      });
+      res.end("<!doctype html><title>ok</title><body>ok</body>");
+    });
+    await new Promise<void>((r) => cookieServer.listen(0, "127.0.0.1", r));
+    const cookieOrigin = `http://127.0.0.1:${(cookieServer.address() as AddressInfo).port}/`;
+
+    const bridge = await startBridge({
+      executablePath: CHROME,
+      backend: new MockVaultDriver({ bindings: [] }),
+      host: "127.0.0.1",
+      port: 0,
+      args: LAUNCH_ARGS,
+    });
+
+    const received: string[] = [];
+    const ws = new WebSocket(bridge.url);
+    try {
+      await new Promise((res, rej) => {
+        ws.once("open", res);
+        ws.once("error", rej);
+      });
+      ws.on("message", (d) => received.push(String(d)));
+
+      const call = (() => {
+        let next = 1;
+        return (method: string, params?: Record<string, unknown>, sessionId?: string) =>
+          new Promise<Record<string, unknown>>((resolve) => {
+            const id = next++;
+            const onMessage = (d: WebSocket.RawData) => {
+              const m = JSON.parse(String(d));
+              if (m.id === id) {
+                ws.off("message", onMessage);
+                resolve(m);
+              }
+            };
+            ws.on("message", onMessage);
+            ws.send(
+              JSON.stringify({
+                id,
+                method,
+                ...(params ? { params } : {}),
+                ...(sessionId ? { sessionId } : {}),
+              }),
+            );
+          });
+      })();
+
+      const created = await call("Target.createTarget", { url: "about:blank" });
+      const targetId = (created.result as { targetId: string }).targetId;
+      const attached = await call("Target.attachToTarget", { targetId, flatten: true });
+      const sessionId = (attached.result as { sessionId: string }).sessionId;
+
+      await call("Network.enable", {}, sessionId);
+      await call("Page.enable", {}, sessionId);
+      await call("Page.navigate", { url: cookieOrigin }, sessionId);
+      await new Promise((r) => setTimeout(r, 1200));
+      // Again, so the browser sends the cookie back. The first visit only
+      // populates the response-side fields; the request-side `associatedCookies`
+      // appears when the cookie is being returned, and a redactor that only
+      // covers the response half would pass a single-visit test.
+      await call("Page.navigate", { url: cookieOrigin }, sessionId);
+      await new Promise((r) => setTimeout(r, 1200));
+
+      const extraInfo = received.filter((f) => f.includes("ExtraInfo"));
+      expect(extraInfo.length, "the extra-info events were not delivered at all").toBeGreaterThan(0);
+      expect(
+        received.filter((f) => f.includes(SECRET)),
+        "a Set-Cookie value reached the agent",
+      ).toHaveLength(0);
+    } finally {
+      ws.close();
+      await bridge.close();
+      await new Promise<void>((r) => cookieServer.close(() => r()));
+    }
+  }, 30_000);
+});

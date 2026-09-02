@@ -12,26 +12,42 @@
  * is checked against the clients people actually bring (Puppeteer, Playwright,
  * and by extension the Playwright-based agents browser-use and Stagehand).
  *
- * These are `it.fails` on purpose. As of the handshake answerer landing
- * (issue #2), a stock client gets past `Browser.getVersion` and then blocks:
- * with the gate enforced it is refused on the next method it sends
+ * These arrived as `it.fails` — a live tripwire for a gap that was real when
+ * they were written, and right on every detail. A stock client got past
+ * `Browser.getVersion` and was refused on the next method it sent
  * (`Target.getBrowserContexts` for Puppeteer, `Browser.setDownloadBehavior` for
- * Playwright); even with every method allowed, `newPage()` never resolves,
- * because the proxy does not synthesise the target-lifecycle events
- * (`targetCreated` / `attachedToTarget` / `targetInfoChanged`) the client waits
- * for to build its Page. The body below is the real acceptance test; when the
- * answerer presents a coherent target lifecycle for a client's own pages, this
- * starts passing, `it.fails` turns it red, and that is the signal to drop the
- * `.fails`.
+ * Playwright), and past those it still could not open a page. The tripwire has
+ * fired, so the `.fails` is gone and these are ordinary tests.
  *
- * The framework clients are NOT dependencies of this package — a smoke test
- * should not pull Playwright's install into everyone's CI. The test skips
- * unless they are present, so to run it locally:
+ * What it took, and why each part is worth keeping in view:
  *
- *   pnpm add -D -w puppeteer-core playwright-core
- *   pnpm test framework-connect
+ *   - the connect handshake answered locally rather than forwarded, so a client
+ *     is satisfied without Chromium being put into global discovery;
+ *   - auto-attach performed for real on the client's behalf, so the sessionId it
+ *     is handed is one that works and is recorded as its own;
+ *   - the two `Network.*ExtraInfo` events forwarded with their headers emptied.
+ *     They were refused outright — they carry `Cookie` and `Set-Cookie` — and a
+ *     client's network bookkeeping will not settle a navigation without them.
+ *     `page.goto()` hung while `page.content()` returned the new document,
+ *     because the navigation had in fact completed. Diffing the event stream
+ *     against a raw Chromium showed those two as the only difference;
+ *   - locally-answered replies echoing the `sessionId` they were sent on. A
+ *     client routes a reply by its session, so one that arrives on the root
+ *     session carrying an id the root never sent is a protocol violation.
+ *     Playwright asserts on it; Puppeteer does not — which is exactly why one
+ *     client is not enough to check this with.
  *
- * and point at a Chromium with ONECLAW_BRIDGE_CHROME if it is not at the
+ * `puppeteer-core` and `playwright-core` are devDependencies, so CI runs this.
+ *
+ * They arrived optional, to keep Playwright's install out of everyone's CI —
+ * a fair concern about `playwright`, which downloads browsers. `playwright-core`
+ * and `puppeteer-core` are the libraries alone: 21MB together and no browser
+ * download, because they drive a Chromium you already have. Left optional, the
+ * one test that checks the README's headline claim would skip in CI, and a
+ * skipped test is indistinguishable from a passing one.
+ *
+ * The optional import stays, so a checkout without them still runs the rest of
+ * the suite. Point at a Chromium with ONECLAW_BRIDGE_CHROME if it is not at the
  * default path.
  */
 import { existsSync } from "node:fs";
@@ -92,8 +108,8 @@ async function bridge(): Promise<BridgeHandle> {
   return startBridge({ executablePath: CHROME, backend, host: "127.0.0.1", port: 0, args: LAUNCH_ARGS });
 }
 
-const runPuppeteer = HAVE_CHROME && puppeteer ? it.fails : it.skip;
-const runPlaywright = HAVE_CHROME && playwright ? it.fails : it.skip;
+const runPuppeteer = HAVE_CHROME && puppeteer ? it : it.skip;
+const runPlaywright = HAVE_CHROME && playwright ? it : it.skip;
 
 describe("a stock framework client can drive the bridge", () => {
   runPuppeteer(
