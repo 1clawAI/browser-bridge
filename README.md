@@ -57,6 +57,45 @@ sees the password.
 > *target* id, so the two counters never met and a grant survived the navigation
 > it existed to be invalidated by.
 
+## Where this sits
+
+It is not an alternative to Playwright, Puppeteer, browser-use, Stagehand or
+Anthropic's Computer Use. Those answer *how does the agent drive*. This answers
+*how does a credential get used without the agent holding it*, which they leave
+to you.
+
+- **Computer Use** has the model issue keystrokes. A password typed that way is
+  an action the model chose, and so is in its context.
+- **browser-use** types from a value your code supplied. Its `sensitive_data`
+  keeps that value out of the prompt by substituting placeholders — the agent
+  process still holds it, and a prompt injection that redirects the page can
+  still get it submitted somewhere else.
+- **This** keeps the value in a separate process the agent cannot read from.
+  The agent asks *which* binding; it cannot choose the page, cannot read the
+  field, and cannot collect the value.
+
+browser-use is Playwright-based, so it connects to the bridge unchanged. There
+is a test that drives stock `puppeteer-core` and `playwright-core` through the
+gate against a real Chromium on every commit.
+
+## How fast
+
+A full lifecycle against a live third-party site — create the account, sign in,
+capture the API key the site issues, and make a real request with it. No human
+at any step.
+
+| Stage | Time | What happens |
+|---|---:|---|
+| Provision — register + store password | 2.13s | The bridge signs up, generates the password and stores it |
+| Sign in — username + password + submit | 1.14s | The bridge logs in; the agent never sees the password |
+| Capture — read + store the API key | 0.80s | The bridge reads the key in a window the agent never lands on |
+| Use — request with the key injected | 0.37s | The key is injected; the agent passes only a city name |
+| **End to end** | **4.43s** | |
+
+Most of that is opening a fresh page for each credential operation. That cost is
+also the control: a listener the agent installed earlier has nothing to observe,
+because the typing does not happen on a page the agent has ever scripted.
+
 ## The invariant
 
 **No backend can return a secret through a tool result.** `consumeFill()`
