@@ -34,29 +34,30 @@ node packages/browser-bridge/examples/register-login-act.mjs
 
 ## Connecting a framework
 
-These examples connect through the bridge's CDP proxy with a small hand-rolled
-client (`agent.mjs`). That is deliberate, and worth being clear about, because
-the more obvious choice does not work yet.
+**Stock Puppeteer and Playwright connect to the bridge.** `puppeteer.connect({
+browserWSEndpoint })` and `playwright.chromium.connectOverCDP()` both work
+against the URL `startBridge` prints, and `framework-connect.test.ts` drives each
+of them through the gate against a real Chromium on every commit.
 
-**Puppeteer and Playwright do not connect through the gate as of v0.1**, and
-neither do the Playwright-based agents built on them (browser-use, Stagehand).
-On attach they call `Browser.getVersion`, which is not on the allowlist:
+This used to be the opposite. On attach those clients call `Browser.getVersion`,
+which is not on the allowlist, and they drive target discovery with
+`Target.setAutoAttach` and `Target.setDiscoverTargets`, which the gate refuses
+**by design** — re-attaching to Chromium outside the gate is the one step that
+makes the no-plaintext invariant moot (see `cdp-policy.ts`).
 
-```
-Protocol error (Browser.getVersion): method_not_allowed:
-  Browser.getVersion is not on the bridge allowlist
-```
+The fix was the one this file used to describe as necessary: the proxy answers
+that handshake itself instead of passing it through or allowlisting it. It
+reports the browser version, reports only the caller's own targets, and accepts
+the auto-attach request without arranging any attachment the gate does not
+mediate. The refusal that protects the invariant is unchanged; what changed is
+that a conforming client no longer trips over it.
 
-Allowlisting that one method is not enough on its own — those clients also drive
-target discovery with `Target.setAutoAttach` and `Target.setDiscoverTargets`,
-which the gate refuses **by design**: re-attaching to Chromium outside the gate
-is the one step that makes the whole no-plaintext invariant moot (see
-`cdp-policy.ts`). Supporting a stock framework client therefore means teaching
-the proxy to answer that handshake itself rather than passing it through, which
-is a real change to the proxy and not a line in the allowlist.
+The examples still use a small hand-rolled client (`agent.mjs`) because it shows
+the protocol surface plainly — which methods an agent may call is the whole
+point of the gate, and a framework hides that behind its own API.
 
-Until then, a framework integrates the way `agent.mjs` does: speak gated CDP
-directly, using the allowlisted methods (`Target.createTarget`,
+A framework may also integrate the way `agent.mjs` does, speaking gated CDP
+directly with the allowlisted methods (`Target.createTarget`,
 `Target.attachToTarget`, `Page.navigate`, `Page.reload`, `Runtime.evaluate`,
 `Input.*`), and call the MCP tools (`request_fill`,
 `begin_credential_registration`) for anything that touches a credential. The

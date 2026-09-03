@@ -9,13 +9,13 @@
  * uses only allowlisted methods — create a target, attach to it, evaluate,
  * navigate, reload — which is the whole point of the gate.
  *
- * The popular Node frameworks (Puppeteer, Playwright, and the Playwright-based
- * agents such as browser-use and Stagehand) do NOT connect through the gate as
- * of v0.1: on attach they call `Browser.getVersion`, which is not allowlisted,
- * and they rely on `Target.setAutoAttach` / `Target.setDiscoverTargets`, which
- * the gate refuses by design — re-attaching outside the gate would defeat it.
- * See examples/README.md. Until that is addressed, a framework integrates by
- * speaking gated CDP directly, the way this class does.
+ * Stock Puppeteer and Playwright also connect: the proxy answers the attach
+ * handshake (`Browser.getVersion`, `Target.setDiscoverTargets`,
+ * `Target.setAutoAttach`) itself rather than allowlisting it, so a conforming
+ * client gets what it needs while the gate still refuses to arrange any
+ * attachment it does not mediate. `framework-connect.test.ts` drives both
+ * against a real Chromium. This class stays hand-rolled because it shows the
+ * protocol surface plainly, which a framework hides behind its own API.
  */
 import { WebSocket } from "ws";
 
