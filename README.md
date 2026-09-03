@@ -554,8 +554,8 @@ rejecting only cross-site `Origin`s.
 
 ## Roadmap
 
-- **v0.1** (here) — `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks + Chromium pipe transport + per-client `BrowserContext` + MCP stdio + the composition root and `1claw-browser-bridge` bin. Vault side: device pairing and revocation, binding CRUD with form fingerprints, sessions, fill authorisation and single-use grant consumption. Adversarial suite, and twenty tests against a real Chromium.
-- **OSS launch** — the gate was the adversarial harness passing against the saas driver. It does, and the vault half is implemented rather than flagged off, so the client is exercised end to end today (33 assertions against production). Form-action and fingerprint checks are done. What remains is a **mock-vault** so someone without a 1Claw account can run the thing — a real gap for a public repo, since the only backend that exists talks to an API they cannot reach.
+- **v0.1** — published: `@1claw/browser-bridge` and `@1claw/browser-bridge-protocol`, both 0.1.0 on npm. `VaultBackend` + `SecretHandle` + saas driver + CDP allowlist gate + loopback checks + Chromium pipe transport + per-client `BrowserContext` + MCP stdio + the composition root and `1claw-browser-bridge` bin. Vault side: device pairing and revocation, binding CRUD with form fingerprints, sessions, fill authorisation and single-use grant consumption. 266 tests across 29 files, 20 of them driving a real Chromium.
+- **OSS launch** — the gate was the adversarial harness passing against the saas driver. It does, and the vault half is implemented rather than flagged off, so the client is exercised end to end today (35 assertions against production, via `scripts/test-browser-bridge-e2e-prod.sh` in the main repo). Form-action and fingerprint checks are done. What remains is a **mock-vault** so someone without a 1Claw account can run the thing — a real gap for a public repo, since the only backend that exists talks to an API they cannot reach.
 
   **Done.** `MockVaultDriver` is an in-memory backend, and
   `examples/demo.mjs` runs the whole thing with no account: a local login form,
@@ -566,8 +566,16 @@ rejecting only cross-site `Origin`s.
   pnpm install && pnpm build && node packages/browser-bridge/examples/demo.mjs
   ```
 
-  The community driver has landed too: `LocalVaultDriver`, an AES-256-GCM file keyed by scrypt from a passphrase you hold, with `1claw-vault` to manage it. Three backends now ship, and the adversarial suite is green on all of them — which was always the real bar.
-- **v0.2** — governed credential registration **(done, local backend)** and governed credential **capture** — a fill in reverse: while logged in, the bridge reads a secret the site generates (an API key, a token) in a windowed page and stores it in the vault, without the agent seeing it **(done, local backend; see `examples/full-flow-capture.mjs`)**; HITL approval queue, TOTP fill, and both on the hosted backend still to come
+  The community driver has landed too: `LocalVaultDriver`, an AES-256-GCM file keyed by scrypt from a passphrase you hold, with `1claw-vault` to manage it. Three backends now ship: `saas`, `local` and `mock`.
+
+  Where each one is covered, since the split is deliberate. The adversarial suite
+  runs once, against a stub backend, because the confinement it tests belongs to
+  the core and must not vary by driver — `core-has-no-driver-conditionals.test.ts`
+  pins that structurally, so running it three times would assert the same code
+  three times. The drivers get their own suites instead (`mock.test.ts`,
+  `local.test.ts`, 14 tests each), and `saas` is covered end to end against
+  production rather than by unit tests, since it needs a real vault to answer.
+- **v0.2** — governed credential registration **(done, local backend)** and governed credential **capture** — a fill in reverse: while logged in, the bridge reads a secret the site generates (an API key, a token) in a windowed page and stores it in the vault, without the agent seeing it **(done, local backend; see `examples/full-flow-capture.mjs`)**; HITL approval queue, TOTP fill, and both on the hosted backend still to come. For HITL the client half is already there — `authorizeFill` may answer `awaiting_approval` and the bridge surfaces `get_approval_status` when a backend declares the `hitl` capability — but all three drivers report `hitl: false`, so nothing produces that answer yet. TOTP has no code at all
 - **v0.3** — **cloud-runtime sidecar**: the same flow, unattended, inside a 1Claw
   runtime container. The bridge already does all of it on a laptop; what it needs
   is hosting. Two of the three obstacles are packaging (a browser in the image, a
