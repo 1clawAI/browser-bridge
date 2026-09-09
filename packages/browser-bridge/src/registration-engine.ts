@@ -5,6 +5,7 @@ import type { RegistrationGrant, RegistrationOutcome } from "@1claw/browser-brid
 import type { CdpGate } from "./cdp-policy.js";
 import type { CdpTransport } from "./cdp-transport.js";
 import type { SecretHandle } from "./secret-handle.js";
+import type { TraceEvent } from "./trace.js";
 
 export type RegistrationEngineDeps = {
   readonly transport: CdpTransport;
@@ -17,9 +18,30 @@ export type RegistrationEngineDeps = {
   readonly onError?: (error: unknown) => void;
   /** How long to wait for a success or error signal. */
   readonly settleMs?: number;
+  /**
+   * Step-by-step record of the registration, for debugging and future
+   * playback. See `fill-engine.ts`'s `onStep` doc and `trace.ts` for the full
+   * contract — same rule here: `detail` is a selector or a plain reason,
+   * never a username, password, or `extraFields` value. Screenshots (at
+   * navigate and at settle) show whatever the page actually rendered, which
+   * for extra fields (not secrets, typed as plain text) may include the
+   * value if the field displays it — the same as it would to a person
+   * looking at the screen, and no different from what the policy's author
+   * already knows.
+   */
+  readonly onStep?: (event: TraceEvent) => void;
 };
 
 const DEFAULT_SETTLE_MS = 15_000;
+
+/** Just the host — see the identical helper and its doc in fill-engine.ts. */
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "(unparseable url)";
+  }
+}
 const POLL_MS = 250;
 
 /**
@@ -79,11 +101,14 @@ export class RegistrationEngine {
         method: "Page.navigate",
         params: { url: grant.signupUrl },
       });
-      await this.#waitFor(sessionId, grant.usernameSelector, settleMs);
+      const fieldReady = await this.#waitFor(sessionId, grant.usernameSelector, settleMs).then(() => true, () => false);
+      this.#trace(grant.registrationId, "navigate", fieldReady, safeHost(grant.signupUrl), await this.#screenshot(sessionId));
+      if (!fieldReady) throw new Error("the signup form never appeared");
 
       const before = await this.#url(sessionId);
 
       await this.#type(sessionId, grant.usernameSelector, grant.username);
+      this.#trace(grant.registrationId, "type_username", true, grant.usernameSelector);
       // Other required fields the real form has -- DOB, address, phone, and
       // the like. Typed the same way the username is: plainly, by the bridge,
       // in this same windowed page, so an agent that could observe the
@@ -92,20 +117,26 @@ export class RegistrationEngine {
       // form's own top-to-bottom layout.
       for (const field of grant.extraFields ?? []) {
         await this.#type(sessionId, field.selector, field.value);
+        this.#trace(grant.registrationId, "type_extra_field", true, field.selector);
       }
       handle = await takeSecret(grant.registrationId);
       // `use()` inside typeSecret has already zeroed the buffer; dropping the
       // reference stops `finally` from disposing an inert handle again.
       await this.#typeSecret(sessionId, grant.passwordSelector, handle);
       handle = undefined;
+      // No screenshot at this step, on principle -- see fill-engine.ts's
+      // identical rule for the same step.
+      this.#trace(grant.registrationId, "type_secret", true, grant.passwordSelector);
 
       if (grant.submitSelector) {
         await this.#click(sessionId, grant.submitSelector);
       } else {
         await this.#eval(sessionId, `document.querySelector(${JSON.stringify(grant.passwordSelector)})?.form?.submit()`);
       }
+      this.#trace(grant.registrationId, "submit", true, grant.submitSelector ?? "(form.submit())");
 
       const verdict = await this.#settle(sessionId, grant, before, settleMs);
+      this.#trace(grant.registrationId, "settle", verdict === "ok", verdict, await this.#screenshot(sessionId));
       if (verdict === "rejected") {
         await cancel(grant.registrationId);
         return { status: "rejected", reason: "site_rejected_password" };
@@ -125,6 +156,7 @@ export class RegistrationEngine {
       // Not `err.message`: this reaches the agent, and the text comes from the
       // transport and the backend.
       this.#deps.onError?.(err);
+      this.#trace(grant.registrationId, "error", false, err instanceof Error ? err.message : "unknown error");
       return { status: "error", message: "the registration did not complete" };
     } finally {
       handle?.dispose();
@@ -135,6 +167,40 @@ export class RegistrationEngine {
           .catch(() => {});
         this.#deps.gate.closeFillWindow(target);
       }
+      this.#trace(grant.registrationId, "closed", true);
+    }
+  }
+
+  /** Same contract as fill-engine.ts's identical helper. */
+  #trace(registrationId: string, step: string, ok: boolean, detail?: string, screenshotPng?: Uint8Array): void {
+    if (!this.#deps.onStep) return;
+    try {
+      this.#deps.onStep({
+        op: "registration",
+        id: registrationId,
+        step,
+        at: Date.now(),
+        ok,
+        ...(detail !== undefined ? { detail } : {}),
+        ...(screenshotPng !== undefined ? { screenshotPng } : {}),
+      });
+    } catch {
+      // The operator's own handler threw; not this engine's problem.
+    }
+  }
+
+  /** Same contract as fill-engine.ts's identical helper. */
+  async #screenshot(sessionId: string): Promise<Uint8Array | undefined> {
+    try {
+      const reply = (await this.#deps.transport.send({
+        sessionId,
+        method: "Page.captureScreenshot",
+        params: { format: "png" },
+      })) as { result?: { data?: unknown } };
+      const data = reply.result?.data;
+      return typeof data === "string" ? Buffer.from(data, "base64") : undefined;
+    } catch {
+      return undefined;
     }
   }
 

@@ -5,6 +5,7 @@ import type { Grant } from "@1claw/browser-bridge-protocol";
 import type { CdpGate } from "./cdp-policy.js";
 import type { CdpMessage, CdpTransport } from "./cdp-transport.js";
 import type { SecretHandle } from "./secret-handle.js";
+import type { TraceEvent } from "./trace.js";
 import type { VaultBackend } from "./vault-backend.js";
 
 /**
@@ -30,6 +31,20 @@ import type { VaultBackend } from "./vault-backend.js";
  *      agent permanently locked out of its own browser — the failure path is
  *      where a half-open window would otherwise persist.
  */
+
+/**
+ * Just the host, for a trace step's `detail`. The full `loginUrl` is
+ * operator-authored policy, not a secret, but a trace event is meant to be
+ * read at a glance and a bare host says everything a debugging session needs
+ * from this particular step.
+ */
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "(unparseable url)";
+  }
+}
 
 export type FillOutcome =
   | { readonly status: "filled" }
@@ -62,6 +77,15 @@ export type FillEngineDeps = {
    * and the agent must not have it, so they cannot be the same string.
    */
   readonly onError?: (error: unknown) => void;
+  /**
+   * A step-by-step record of the fill, for debugging and future playback —
+   * never a substitute for `onError`, which stays the "why did this fail"
+   * channel. `onStep` never carries a secret: `detail` is a selector or a
+   * plain reason, and the two screenshots (right after navigating, right
+   * before the page closes) show a password field masked by the browser
+   * itself, never in the clear. See `trace.ts` for the full contract.
+   */
+  readonly onStep?: (event: TraceEvent) => void;
 };
 
 export class FillEngine {
@@ -80,6 +104,7 @@ export class FillEngine {
    */
   async fill(targetId: string, grant: Grant, selector: string): Promise<FillOutcome> {
     const { backend, transport, gate, currentGeneration } = this.#deps;
+    const bindingId = grant.bindingId;
 
     // 1. Block the agent before the secret exists anywhere in this process.
     gate.openFillWindow(targetId);
@@ -115,10 +140,12 @@ export class FillEngine {
       // 4. The binding's URL, not the agent's.
       await this.#send({ sessionId, method: "Page.navigate", params: { url: grant.loginUrl } });
       const loginOrigin = await this.#currentUrl(sessionId);
+      this.#trace(bindingId, "navigate", true, safeHost(grant.loginUrl), await this.#screenshot(sessionId));
 
       // 5. Navigation bumps the generation, so this catches both a page that
       //    moved on its own and one the agent moved underneath us.
       if (currentGeneration(targetId) !== grant.generation) {
+        this.#trace(bindingId, "generation_check", false, "stale before typing began");
         return { status: "aborted", reason: "generation_stale" };
       }
 
@@ -127,17 +154,22 @@ export class FillEngine {
       // secret, so it is typed plainly — but by the bridge in this windowed
       // page, so the agent still never scripts the login.
       if (grant.usernameSelector && grant.username) {
-        if (!(await this.#typeInto(sessionId, grant.usernameSelector, grant.username))) {
+        const typed = await this.#typeInto(sessionId, grant.usernameSelector, grant.username);
+        this.#trace(bindingId, "type_username", typed, grant.usernameSelector);
+        if (!typed) {
           return { status: "error", message: "the username field never appeared" };
         }
         if (currentGeneration(targetId) !== grant.generation) {
+          this.#trace(bindingId, "generation_check", false, "stale after typing the username");
           return { status: "aborted", reason: "navigated" };
         }
       }
 
       // Wait for the field. Page.navigate resolves before the document exists,
       // so without this the focus below runs against an empty page.
-      if (!(await this.#waitForSelector(sessionId, selector, this.#deps.readyTimeoutMs ?? 10_000))) {
+      const fieldReady = await this.#waitForSelector(sessionId, selector, this.#deps.readyTimeoutMs ?? 10_000);
+      this.#trace(bindingId, "wait_for_field", fieldReady, selector);
+      if (!fieldReady) {
         return { status: "error", message: "the field never appeared" };
       }
 
@@ -157,24 +189,30 @@ export class FillEngine {
         `(() => { const el = document.querySelector(${JSON.stringify(selector)});
                   if (!el) return false; el.focus(); return document.activeElement === el; })()`,
       );
+      this.#trace(bindingId, "focus", focused === true, selector);
       if (focused !== true) {
         return { status: "error", message: "could not focus the field" };
       }
 
       // Re-check after every await that could have yielded to a navigation.
       if (currentGeneration(targetId) !== grant.generation) {
+        this.#trace(bindingId, "generation_check", false, "stale after focusing the field");
         return { status: "aborted", reason: "navigated" };
       }
 
       // 6. Borrow, type, and let `use` zero the buffer even if this throws.
       const text = handle.use((bytes) => new TextDecoder().decode(bytes));
       await this.#send({ sessionId, method: "Input.insertText", params: { text } });
+      // No screenshot here, on principle: this step exists for exactly one
+      // reason, the secret is on the page. Trace it, never picture it.
+      this.#trace(bindingId, "type_secret", true, selector);
 
       // 7. Submit.
       //
       // Without this the ceremony typed a password into a throwaway page and
       // closed it, so nothing ever logged in — and it reported "filled".
       await this.#submit(sessionId, selector, grant.submitSelector);
+      this.#trace(bindingId, "submit", true, grant.submitSelector ?? "(enter key)");
 
       // 8. Let the submission land before `finally` closes this page.
       //
@@ -185,6 +223,7 @@ export class FillEngine {
       // error — so this waits for completion, not for success. Whether the
       // credentials were right is the agent's to discover in its own tab.
       await this.#waitForNavigation(sessionId, loginOrigin, this.#deps.submitTimeoutMs ?? 10_000);
+      this.#trace(bindingId, "settle", true, await this.#currentUrl(sessionId), await this.#screenshot(sessionId));
 
       return { status: "filled" };
     } catch (e) {
@@ -194,6 +233,7 @@ export class FillEngine {
       // reading, would put that text in front of the caller this package exists
       // to keep it away from. The detail goes to the operator instead.
       this.#deps.onError?.(e);
+      this.#trace(bindingId, "error", false, e instanceof Error ? e.message : "unknown error");
       return { status: "error", message: "the fill did not complete" };
     } finally {
       // A handle that was consumed but never typed — because the generation
@@ -210,6 +250,7 @@ export class FillEngine {
       }
       // 7. Always. A stuck window locks the agent out of its own browser.
       gate.closeFillWindow(targetId);
+      this.#trace(bindingId, "closed", true);
     }
   }
 
@@ -311,6 +352,48 @@ export class FillEngine {
                 }
                 return true; })()`,
     );
+  }
+
+  /**
+   * Emit one trace step. Never throws — a broken `onStep` handler in the
+   * caller's own code must not be able to abort a fill that was otherwise
+   * going fine, which is exactly the kind of failure a debug feature must
+   * never cause.
+   */
+  #trace(bindingId: string, step: string, ok: boolean, detail?: string, screenshotPng?: Uint8Array): void {
+    if (!this.#deps.onStep) return;
+    try {
+      this.#deps.onStep({
+        op: "fill",
+        id: bindingId,
+        step,
+        at: Date.now(),
+        ok,
+        ...(detail !== undefined ? { detail } : {}),
+        ...(screenshotPng !== undefined ? { screenshotPng } : {}),
+      });
+    } catch {
+      // The operator's own handler threw. Not this engine's problem to solve
+      // or to let derail a fill that was otherwise proceeding correctly.
+    }
+  }
+
+  /**
+   * `Page.captureScreenshot` is already on the CDP allowlist (it has to be,
+   * for the agent's own use), so this costs nothing new to the security
+   * model — it is the bridge itself calling an already-permitted method on
+   * its own throwaway page, the same as every other bridge-originated
+   * command in this file. Never throws: a screenshot that fails to capture
+   * is a missing trace frame, not a reason to fail the fill.
+   */
+  async #screenshot(sessionId: string): Promise<Uint8Array | undefined> {
+    try {
+      const reply = await this.#send({ sessionId, method: "Page.captureScreenshot", params: { format: "png" } });
+      const data = (reply.result as { data?: unknown } | undefined)?.data;
+      return typeof data === "string" ? Buffer.from(data, "base64") : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async #eval(sessionId: string, expression: string): Promise<unknown> {
