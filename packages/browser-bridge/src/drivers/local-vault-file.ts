@@ -49,6 +49,15 @@ export type RegistrationPolicy = {
   readonly usernameSelector: string;
   readonly passwordSelector: string;
   readonly submitSelector?: string;
+  /**
+   * Other fields the real signup form requires beyond username and password --
+   * date of birth, an address, a phone number, and the like. Each is typed
+   * plainly by the bridge, the same way the username is: never handed to the
+   * agent, never a SecretHandle, but kept out of the agent's context by the
+   * same windowed page the password is typed in. Filled in order, before the
+   * password.
+   */
+  readonly extraFields?: readonly { readonly selector: string; readonly value: string }[];
   readonly success: {
     readonly urlChanges?: boolean;
     readonly selector?: string;

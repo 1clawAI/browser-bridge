@@ -283,6 +283,7 @@ export class LocalVaultDriver implements VaultBackend {
       usernameSelector: policy.usernameSelector,
       passwordSelector: policy.passwordSelector,
       ...(policy.submitSelector ? { submitSelector: policy.submitSelector } : {}),
+      ...(policy.extraFields?.length ? { extraFields: policy.extraFields } : {}),
       success: policy.success,
     };
   }

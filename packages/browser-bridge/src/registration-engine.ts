@@ -84,6 +84,15 @@ export class RegistrationEngine {
       const before = await this.#url(sessionId);
 
       await this.#type(sessionId, grant.usernameSelector, grant.username);
+      // Other required fields the real form has -- DOB, address, phone, and
+      // the like. Typed the same way the username is: plainly, by the bridge,
+      // in this same windowed page, so an agent that could observe the
+      // password could observe these too, which is exactly what the window
+      // prevents. In order, before the password, matching a typical signup
+      // form's own top-to-bottom layout.
+      for (const field of grant.extraFields ?? []) {
+        await this.#type(sessionId, field.selector, field.value);
+      }
       handle = await takeSecret(grant.registrationId);
       // `use()` inside typeSecret has already zeroed the buffer; dropping the
       // reference stops `finally` from disposing an inert handle again.

@@ -48,7 +48,7 @@ const siteAccepts = (pw: string) => pw.length >= 12 && /[^A-Za-z0-9]/.test(pw);
 let server: Server;
 let origin = "";
 /** What the site actually received, so we can compare it with what was stored. */
-let received: { username?: string; password?: string } = {};
+let received: { username?: string; password?: string; mobile?: string; dob?: string } = {};
 
 beforeAll(async () => {
   server = createServer((req, res) => {
@@ -59,6 +59,8 @@ beforeAll(async () => {
         ${url.searchParams.get("error") ? '<p class="error">Password too weak</p>' : ""}
         <form action="/session" method="post">
           <input id="email" name="email">
+          <input id="mobile" name="mobile">
+          <input id="dob" name="dob">
           <input id="password" name="password" type="password">
           <button type="submit" id="go">Create</button>
         </form></body>`);
@@ -70,7 +72,10 @@ beforeAll(async () => {
       req.on("end", () => {
         const form = new URLSearchParams(body);
         const password = form.get("password") ?? "";
-        received = { username: form.get("email") ?? "", password };
+        received = {
+          username: form.get("email") ?? "", password,
+          mobile: form.get("mobile") ?? "", dob: form.get("dob") ?? "",
+        };
         // A real site rejects and re-renders; it does not silently succeed.
         const to = siteAccepts(password) ? "/welcome" : "/signup?error=1";
         res.writeHead(302, { location: to });
@@ -148,6 +153,38 @@ describe.skipIf(!HAVE_CHROME)("registering against a real signup form", () => {
       const doc = await openVault(JSON.parse(await readFile(path, "utf8")), PASSPHRASE);
       expect(doc.entries).toHaveLength(1);
       expect(doc.entries[0]!.secret).toBe(received.password);
+    } finally {
+      await transport.close();
+    }
+  }, 120_000);
+
+  it("types extra fields a real form requires beyond username and password", async () => {
+    received = {};
+    const { driver, transport, engine } = await setup(
+      policy({
+        extraFields: [
+          { selector: "#mobile", value: "555-0100" },
+          { selector: "#dob", value: "1990-01-01" },
+        ],
+      }),
+    );
+    try {
+      const grant = await driver.beginRegistration({ siteId: "acme" } as never);
+      if (grant.kind !== "registration_grant") throw new Error("expected a grant");
+      expect(grant.extraFields).toEqual([
+        { selector: "#mobile", value: "555-0100" },
+        { selector: "#dob", value: "1990-01-01" },
+      ]);
+
+      const outcome = await engine.register(grant as never);
+      expect(outcome).toMatchObject({ status: "registered", bindingId: "acme" });
+
+      // The real form actually received both -- not just accepted by the
+      // grant's shape, but typed into the real fields of a real page.
+      expect(received.mobile).toBe("555-0100");
+      expect(received.dob).toBe("1990-01-01");
+      expect(received.username).toBe("ada@example.com");
+      expect(received.password).toBeTruthy();
     } finally {
       await transport.close();
     }
