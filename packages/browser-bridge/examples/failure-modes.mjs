@@ -79,7 +79,8 @@ writeFileSync(vaultPath, JSON.stringify(await sealVault({
     allowedHosts: ["127.0.0.1"], usernameSelector: "#email", passwordSelector: "#password", submitSelector: "#go",
     success: { urlChanges: true, errorSelector: ".error" } }],
 }, PASSPHRASE)));
-users.set("pat@example.com", "the-real-password-set-out-of-band");  // so a fill attempt has something to fail against
+const SITE_PASSWORD = "the-real-password-set-out-of-band";
+users.set("pat@example.com", SITE_PASSWORD);  // so a fill attempt has something to fail against
 
 const backend = new LocalVaultDriver({ path: vaultPath, passphrase: PASSPHRASE });
 await backend.open();
@@ -96,8 +97,13 @@ try {
   console.log(`  A. register against a 40-char-min site -> ${JSON.stringify(reg)}`);
   const vaultAfterA = await openVault(JSON.parse(readFileSync(vaultPath, "utf8")), PASSPHRASE);
   const storedA = vaultAfterA.entries.find((e) => e.id === "picky");
-  const aOk = reg.status === "rejected" && reg.reason === "site_rejected_password" && !storedA && !users.has("pat@example.com".toUpperCase());
+  // The site's own record must be untouched. A rejected signup that still
+  // overwrote the account's password would be the worst of the three outcomes,
+  // and it is the one a "nothing was stored in the vault" check cannot see.
+  const siteUnchanged = users.get("pat@example.com") === SITE_PASSWORD;
+  const aOk = reg.status === "rejected" && reg.reason === "site_rejected_password" && !storedA && siteUnchanged;
   console.log(`     nothing stored for "picky": ${!storedA ? "correct" : "BUG -- something was stored anyway"}`);
+  console.log(`     site's own password unchanged: ${siteUnchanged ? "correct" : "BUG -- the rejected signup overwrote it"}`);
   console.log(`     ${aOk ? "OK" : "FAILED"}: rejected password policy correctly cancels rather than commits\n`);
   allOk &&= aOk;
 
