@@ -19,9 +19,17 @@
  *   1claw-vault add    <file> --id <id> --url <login-url> --hosts a.com,.b.com
  *   1claw-vault list   <file>
  *   1claw-vault remove <file> --id <id>
-  1claw-vault allow-signup <file> --id <id> --signup <url> --login <url> \\
-      --username <value> --hosts a.com --user-sel <css> --pass-sel <css> \\
-      [--submit-sel <css>] [--success-sel <css>] [--error-sel <css>]
+ *   1claw-vault allow-signup <file> --id <id> --signup <url> --login <url> \\
+ *       --username <value> --hosts a.com --user-sel <css> --pass-sel <css> \\
+ *       [--submit-sel <css>] [--success-sel <css>] [--error-sel <css>] \\
+ *       [--field <css>=<value> ...]
+ *
+ * --field is repeatable, for the other fields a real signup form asks for --
+ * date of birth, an address, a phone number. Each is typed plainly by the
+ * bridge, the way the username already is: kept out of the agent's context
+ * because it is typed in the same windowed page as the password, not because
+ * it is treated as a secret. Order is preserved and matters only in that
+ * fields fill top to bottom the way you list them.
  *
  * The passphrase comes from ONECLAW_BRIDGE_VAULT_PASSPHRASE, or is prompted for
  * with echo off. Never from a command-line argument: argv is world-readable in
@@ -45,6 +53,9 @@ if (process.env.ONECLAW_SUPPRESS_DEPRECATION !== "1") {
 
 const [cmd, file, ...rest] = process.argv.slice(2);
 const flag = (n) => { const i = rest.indexOf(`--${n}`); return i > -1 ? rest[i + 1] : undefined; };
+// Repeatable: --field a --field b -> ["a", "b"]. Order preserved, since
+// extraFields are typed in the order given.
+const flags = (n) => rest.reduce((acc, v, i) => (v === `--${n}` ? [...acc, rest[i + 1]] : acc), []);
 
 function usage(code = 2) {
   console.error(`usage:
@@ -198,6 +209,16 @@ try {
       console.error("no success signal given; defaulting to --url-changes.");
       console.error("Pass --success-sel for a selector that appears only once the account exists.");
     }
+    // Other required fields the real form has beyond username/password --
+    // DOB, address, phone, and the like. Each --field is "<selector>=<value>";
+    // only the first "=" splits, so a value containing one (a URL, say) still
+    // works. Typed plainly, in the order given, by the bridge -- kept out of
+    // the agent's context the same way the username already is.
+    const extraFields = flags("field").map((f) => {
+      const eq = f.indexOf("=");
+      if (eq < 1) { console.error(`--field must be "<selector>=<value>", got: ${f}`); process.exit(2); }
+      return { selector: f.slice(0, eq), value: f.slice(eq + 1) };
+    });
     const pass = await passphrase();
     const doc = await load(pass);
     if (doc.registrations.some((r) => r.id === id)) { console.error(`${id} already allowed`); process.exit(2); }
@@ -205,13 +226,14 @@ try {
       id, signupUrl: signup, loginUrl: login, username, allowedHosts: hosts,
       usernameSelector: userSel, passwordSelector: passSel,
       ...(flag("submit-sel") ? { submitSelector: flag("submit-sel") } : {}),
+      ...(extraFields.length ? { extraFields } : {}),
       success: {
         ...(successSel ? { selector: successSel } : { urlChanges: true }),
         ...(errorSel ? { errorSelector: errorSel } : {}),
       },
     });
     await save(doc, pass);
-    console.error(`allowed signup for ${id} as ${username}`);
+    console.error(`allowed signup for ${id} as ${username}${extraFields.length ? ` (+${extraFields.length} extra field${extraFields.length === 1 ? "" : "s"})` : ""}`);
   } else if (cmd === "allow-capture") {
     // Authorising an agent to capture a secret the site generates (an API key,
     // a token). Everything it could otherwise choose is fixed here: the page,

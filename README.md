@@ -306,6 +306,33 @@ The bridge generates the password, types it into a page the agent has never
 scripted, and only then stores it. The agent gets a binding id back, which it
 can use for later fills. It never receives the value at any point.
 
+**Real signup forms usually want more than username and password.** A date of
+birth, an address, a phone number — required fields that have nothing to do
+with the credential itself. `--field <selector>=<value>` is repeatable and
+covers exactly that:
+
+```bash
+1claw-vault allow-signup ~/.1claw/vault.json \
+  --id acme \
+  --signup   https://acme.example.com/signup \
+  --login    https://acme.example.com/login \
+  --username ada@example.com \
+  --hosts    acme.example.com \
+  --user-sel '#email' --pass-sel '#password' --submit-sel 'button[type=submit]' \
+  --success-sel '.dashboard' \
+  --field '#mobile=555-0100' \
+  --field '#dob=1990-01-01'
+```
+
+Each field is typed the same way the username already is: plainly, in the
+order given, by the bridge, in the same windowed page the password is typed
+into. That is what keeps it out of the agent's context — the window, not
+whether the value is treated as a secret. None of it is a rotating credential
+that needs a `SecretHandle`'s zeroise-on-drop, so it lives in the policy
+alongside the username, not in the vault's secret storage. The whole vault
+file is still sealed at rest (AES-256-GCM, scrypt from your passphrase)
+regardless of which part of it a value sits in.
+
 **Committing is separate from typing, on purpose.** A password stored that the
 site never accepted produces a binding that will never work, and you find out
 weeks later when a login fails. So the bridge waits for the success signal you
@@ -313,13 +340,15 @@ described — `--success-sel`, or the URL changing — and if it does not see on
 **cancels rather than commits**. `{"status":"rejected","reason":"no_success_signal"}`
 means nothing was stored.
 
-**How this is tested.** Four tests drive a real Chromium against a real signup
+**How this is tested.** Five tests drive a real Chromium against a real signup
 form that enforces a password rule and says no when it is not met: one asserts
-the credential stored is byte-for-byte the one the site received, one that a
-rejected password stores nothing, one that an unrecognisable outcome stores
-nothing, and one that logs in afterwards with what was stored. Breaking the
-verdict check so it commits regardless turns two of them red; storing a freshly
-generated password instead of the typed one turns the other two red.
+the credential stored is byte-for-byte the one the site received, one that
+extra fields (a phone number, a date of birth) land in the real form fields
+the policy names, one that a rejected password stores nothing, one that an
+unrecognisable outcome stores nothing, and one that logs in afterwards with
+what was stored. Breaking the verdict check so it commits regardless turns two
+of them red; storing a freshly generated password instead of the typed one
+turns the other two red.
 
 Five more go through `startBridge` and the MCP tool itself, because a path
 exercised only in pieces is a path nobody has run — that is exactly how a
@@ -575,7 +604,7 @@ rejecting only cross-site `Origin`s.
   three times. The drivers get their own suites instead (`mock.test.ts`,
   `local.test.ts`, 14 tests each), and `saas` is covered end to end against
   production rather than by unit tests, since it needs a real vault to answer.
-- **v0.2** — governed credential registration **(done, local backend)** and governed credential **capture** — a fill in reverse: while logged in, the bridge reads a secret the site generates (an API key, a token) in a windowed page and stores it in the vault, without the agent seeing it **(done, local backend; see `examples/full-flow-capture.mjs`)**; HITL approval queue, TOTP fill, and both on the hosted backend still to come. For HITL the client half is already there — `authorizeFill` may answer `awaiting_approval` and the bridge surfaces `get_approval_status` when a backend declares the `hitl` capability — but all three drivers report `hitl: false`, so nothing produces that answer yet. TOTP has no code at all
+- **v0.2** — governed credential registration **(done, local backend)**, including extra required fields beyond username/password — DOB, address, phone — typed the same way the username is, via repeatable `--field <selector>=<value>` **(done, local backend)**; and governed credential **capture** — a fill in reverse: while logged in, the bridge reads a secret the site generates (an API key, a token) in a windowed page and stores it in the vault, without the agent seeing it **(done, local backend; see `examples/full-flow-capture.mjs`)**; HITL approval queue, TOTP fill, and both on the hosted backend still to come. For HITL the client half is already there — `authorizeFill` may answer `awaiting_approval` and the bridge surfaces `get_approval_status` when a backend declares the `hitl` capability — but all three drivers report `hitl: false`, so nothing produces that answer yet. TOTP has no code at all
 - **v0.3** — **cloud-runtime sidecar**: the same flow, unattended, inside a 1Claw
   runtime container. The bridge already does all of it on a laptop; what it needs
   is hosting. Two of the three obstacles are packaging (a browser in the image, a

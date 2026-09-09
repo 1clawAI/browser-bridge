@@ -181,6 +181,15 @@ export type RegistrationGrant = {
   readonly usernameSelector: string;
   readonly passwordSelector: string;
   readonly submitSelector?: string;
+  /**
+   * Other fields a real signup form requires beyond username and password --
+   * date of birth, a mailing address, a phone number, and the like. Typed the
+   * same way the username is: plain values from the policy, never secrets in
+   * the SecretHandle sense, but typed by the bridge in the same windowed page
+   * as the password, so an agent that could observe one could observe all of
+   * them. Filled in the order listed, before the password.
+   */
+  readonly extraFields?: readonly { readonly selector: string; readonly value: string }[];
   /** How the bridge decides the site accepted the password. */
   readonly success: RegistrationSuccess;
 };
