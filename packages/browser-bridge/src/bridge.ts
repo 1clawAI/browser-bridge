@@ -13,6 +13,7 @@ import { buildToolset, dispatchTool, type ToolDefinition, type ToolResult } from
 import { PipeCdpTransport } from "./pipe-transport.js";
 import { CdpProxyServer } from "./proxy-server.js";
 import type { SecretHandle } from "./secret-handle.js";
+import type { TraceEvent } from "./trace.js";
 import type { VaultBackend } from "./vault-backend.js";
 
 /**
@@ -68,6 +69,15 @@ export type BridgeOptions = {
   readonly args?: readonly string[];
   /** Injectable so the whole bridge can be driven by a fake in tests. */
   readonly transport?: CdpTransport;
+  /**
+   * A step-by-step record of every fill, registration and capture, for
+   * debugging and future playback — never the agent's, only the operator's.
+   * See `trace.ts` for the full contract on what a `TraceEvent` may and may
+   * not carry. Unset by default: this is opt-in, since a screenshot at every
+   * navigate/settle step is not free, and most operators most of the time
+   * want none of it.
+   */
+  readonly onStep?: (event: TraceEvent) => void;
 };
 
 export type BridgeHandle = {
@@ -123,6 +133,7 @@ class RegistrationAdapter {
     transport: CdpTransport,
     gate: CdpGate,
     onError: (e: unknown) => void,
+    onStep: ((e: TraceEvent) => void) | undefined,
   ) {
     this.#backend = backend;
     const b = backend as unknown as {
@@ -151,6 +162,7 @@ class RegistrationAdapter {
         await b.cancelRegistration?.(id);
       },
       onError,
+      ...(onStep !== undefined ? { onStep } : {}),
     });
   }
 
@@ -195,6 +207,7 @@ class CaptureAdapter {
     gate: CdpGate,
     browserContextOf: (targetId: string) => string | undefined,
     onError: (e: unknown) => void,
+    onStep: ((e: TraceEvent) => void) | undefined,
   ) {
     this.#backend = backend;
     const b = backend as unknown as {
@@ -215,6 +228,7 @@ class CaptureAdapter {
         await b.cancelCapture?.(id);
       },
       onError,
+      ...(onStep !== undefined ? { onStep } : {}),
     });
   }
 
@@ -339,15 +353,19 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
 
   // Only constructed when the backend says it can register.
   const registrations = backend.capabilities().registration
-    ? new RegistrationAdapter(backend, transport, gate, (e) =>
-        console.error("[browser-bridge] registration failed:", e),
+    ? new RegistrationAdapter(
+        backend, transport, gate,
+        (e) => console.error("[browser-bridge] registration failed:", e),
+        opts.onStep,
       )
     : undefined;
 
   // Only constructed when the backend says it can capture.
   const captures = backend.capabilities().capture
-    ? new CaptureAdapter(backend, transport, gate, browserContextOf, (e) =>
-        console.error("[browser-bridge] capture failed:", e),
+    ? new CaptureAdapter(
+        backend, transport, gate, browserContextOf,
+        (e) => console.error("[browser-bridge] capture failed:", e),
+        opts.onStep,
       )
     : undefined;
 
@@ -365,6 +383,7 @@ export async function startBridge(opts: BridgeOptions): Promise<BridgeHandle> {
     // stderr, not the tool result. The operator needs the reason; the agent
     // must not have it.
     onError: (e) => console.error("[browser-bridge] fill failed:", e),
+    ...(opts.onStep !== undefined ? { onStep: opts.onStep } : {}),
   });
 
   // A token in the URL path, minted per run. The socket is loopback-only and

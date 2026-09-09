@@ -273,6 +273,40 @@ in the file *and authenticated*, so nobody can edit them down to something cheap
 and still decrypt. There is deliberately no command that prints a secret back
 out.
 
+### Debug mode: step-by-step trace and screenshots
+
+A fill, registration or capture that does not work the way you expect is hard
+to debug from the outside — the only thing that crosses the MCP boundary is a
+status. Point the bridge at a directory and it writes a record of what it
+actually did:
+
+```bash
+1claw-browser-bridge --vault ~/.1claw/vault.json --chrome /path/to/chrome \
+  --debug ~/.1claw/debug
+# or: export ONECLAW_BRIDGE_DEBUG=~/.1claw/debug
+```
+
+Each run gets its own timestamped subdirectory: `trace.jsonl`, one line per
+step (`navigate`, `type_username`, `type_secret`, `submit`, `settle`, and so
+on — see `TraceEvent` in `src/trace.ts`), plus a numbered PNG for every step
+the engine screenshots.
+
+The screenshots are the point: `navigate` and `settle` capture what the page
+actually looked like, which is usually the whole answer when a selector never
+matched or a success check never fired. `type_secret` is traced like every
+other step but never screenshotted, on principle — the password is on the
+page at exactly that moment, so this step is recorded, never pictured. A
+capture is stricter still: it screenshots only `navigate`, before the secret
+exists, and nothing from `read_value` onward.
+
+This is also the shape a future 1Claw dashboard would consume for
+run playback: an ordered trace of named steps, each with a timestamp and a
+handful of checkpoint screenshots, is enough to reconstruct a scrubbable
+timeline of what an agent's fill actually did — without ever recording full
+video, and without the recording itself becoming something that could leak a
+credential. `onStep` is the extension point; `--debug` is the file-based
+reference consumer of it.
+
 ### Creating an account, without the agent knowing the password
 
 The bridge can sign up for a site, generate the password itself, and store it —
@@ -605,6 +639,7 @@ rejecting only cross-site `Origin`s.
   `local.test.ts`, 14 tests each), and `saas` is covered end to end against
   production rather than by unit tests, since it needs a real vault to answer.
 - **v0.2** — governed credential registration **(done, local backend)**, including extra required fields beyond username/password — DOB, address, phone — typed the same way the username is, via repeatable `--field <selector>=<value>` **(done, local backend)**; and governed credential **capture** — a fill in reverse: while logged in, the bridge reads a secret the site generates (an API key, a token) in a windowed page and stores it in the vault, without the agent seeing it **(done, local backend; see `examples/full-flow-capture.mjs`)**; HITL approval queue, TOTP fill, and both on the hosted backend still to come. For HITL the client half is already there — `authorizeFill` may answer `awaiting_approval` and the bridge surfaces `get_approval_status` when a backend declares the `hitl` capability — but all three drivers report `hitl: false`, so nothing produces that answer yet. TOTP has no code at all
+- **v0.2** — **debug mode (done, all three engines).** `onStep` on `startBridge` and every engine emits a `TraceEvent` per step — never a substitute for `onError`, which stays the "why did this fail" channel, but a step-by-step record of what actually happened, with a screenshot at the coarse checkpoints (never at the step where a password is on the page). `1claw-browser-bridge --debug <dir>` (or `ONECLAW_BRIDGE_DEBUG`) is the reference consumer: one JSONL trace plus numbered PNGs per run. Doubles as the shape a future dashboard would consume for playback — see `trace.ts` and the README's "Debug mode" section.
 - **v0.3** — **cloud-runtime sidecar**: the same flow, unattended, inside a 1Claw
   runtime container. The bridge already does all of it on a laptop; what it needs
   is hosting. Two of the three obstacles are packaging (a browser in the image, a

@@ -5,6 +5,7 @@ import type { CaptureGrant, CaptureOutcome } from "@1claw/browser-bridge-protoco
 import type { CdpGate } from "./cdp-policy.js";
 import type { CdpTransport } from "./cdp-transport.js";
 import { SecretHandle } from "./secret-handle.js";
+import type { TraceEvent } from "./trace.js";
 
 export type CaptureEngineDeps = {
   readonly transport: CdpTransport;
@@ -24,10 +25,29 @@ export type CaptureEngineDeps = {
   readonly onError?: (error: unknown) => void;
   /** How long to wait for the value to appear before giving up. */
   readonly settleMs?: number;
+  /**
+   * Step-by-step record of the capture, for debugging and future playback —
+   * see `fill-engine.ts`'s `onStep` doc for the shared contract. Stricter
+   * here than a fill or registration: the whole point of a capture is a
+   * secret displayed *on the page*, so unlike those two, this never takes a
+   * screenshot once generation or reading has started — only before, at
+   * `navigate`. A `read_value` step's `ok` says whether something was
+   * found, never what.
+   */
+  readonly onStep?: (event: TraceEvent) => void;
 };
 
 const DEFAULT_SETTLE_MS = 15_000;
 const POLL_MS = 250;
+
+/** Just the host — see the identical helper and its doc in fill-engine.ts. */
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "(unparseable url)";
+  }
+}
 
 /**
  * Read a secret a site generates, and store it — without the agent seeing it.
@@ -91,13 +111,19 @@ export class CaptureEngine {
       await transport.send({ sessionId, method: "Runtime.enable" });
       // The policy's URL, never the agent's.
       await transport.send({ sessionId, method: "Page.navigate", params: { url: grant.captureUrl } });
+      // The only screenshot this engine ever takes -- before generation or
+      // reading starts. See the class doc: after this point the page may be
+      // showing the secret itself.
+      this.#trace(grant.captureId, "navigate", true, safeHost(grant.captureUrl), await this.#screenshot(sessionId));
 
       // 3. Generate, if there is a control to click, then read.
       if (grant.source.generateSelector) {
         await this.#waitFor(sessionId, grant.source.generateSelector, settleMs);
         await this.#click(sessionId, grant.source.generateSelector);
+        this.#trace(grant.captureId, "generate", true, grant.source.generateSelector);
       }
       const value = await this.#readValue(sessionId, grant.source, settleMs);
+      this.#trace(grant.captureId, "read_value", value !== undefined && value !== "", grant.source.valueSelector);
       if (value === undefined || value === "") {
         await cancel(grant.captureId);
         return { status: "rejected", reason: "no_value_found" };
@@ -110,11 +136,13 @@ export class CaptureEngine {
       // dispose an inert one.
       handle = undefined;
       committed = true;
+      this.#trace(grant.captureId, "committed", true, entryId);
       return { status: "captured", entryId };
     } catch (err) {
       // Not `err.message`: this reaches the agent, and the text comes from the
       // transport and the backend.
       this.#deps.onError?.(err);
+      this.#trace(grant.captureId, "error", false, err instanceof Error ? err.message : "unknown error");
       return { status: "error", message: "the capture did not complete" };
     } finally {
       handle?.dispose();
@@ -127,6 +155,40 @@ export class CaptureEngine {
       }
       // 5. Always. A stuck window locks the agent out of its own browser.
       this.#deps.gate.closeFillWindow(agentTargetId);
+      this.#trace(grant.captureId, "closed", true);
+    }
+  }
+
+  /** Same contract as fill-engine.ts's identical helper. */
+  #trace(captureId: string, step: string, ok: boolean, detail?: string, screenshotPng?: Uint8Array): void {
+    if (!this.#deps.onStep) return;
+    try {
+      this.#deps.onStep({
+        op: "capture",
+        id: captureId,
+        step,
+        at: Date.now(),
+        ok,
+        ...(detail !== undefined ? { detail } : {}),
+        ...(screenshotPng !== undefined ? { screenshotPng } : {}),
+      });
+    } catch {
+      // The operator's own handler threw; not this engine's problem.
+    }
+  }
+
+  /** Same contract as fill-engine.ts's identical helper. */
+  async #screenshot(sessionId: string): Promise<Uint8Array | undefined> {
+    try {
+      const reply = (await this.#deps.transport.send({
+        sessionId,
+        method: "Page.captureScreenshot",
+        params: { format: "png" },
+      })) as { result?: { data?: unknown } };
+      const data = reply.result?.data;
+      return typeof data === "string" ? Buffer.from(data, "base64") : undefined;
+    } catch {
+      return undefined;
     }
   }
 

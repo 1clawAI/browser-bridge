@@ -22,6 +22,7 @@
  *   ONECLAW_AGENT_TOKEN        the agent's JWT — asks whether a fill is allowed
  *   ONECLAW_AGENT_ID           the agent fills are requested for
  *   ONECLAW_BRIDGE_PORT        loopback port (default: ephemeral)
+ *   ONECLAW_BRIDGE_DEBUG       directory to write step-by-step trace + screenshots to
  *
  * Three credentials, because the vault requires three distinct things: which
  * machine (bb_), which person (ONECLAW_TOKEN), which agent (ONECLAW_AGENT_TOKEN).
@@ -32,12 +33,18 @@ import { startBridge, SaasDriver, LocalVaultDriver } from "../dist/index.js";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { makeDebugStep } from "./debug-trace.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (name) => {
   const i = argv.indexOf(`--${name}`);
   return i > -1 ? argv[i + 1] : undefined;
 };
+
+// Same directory-of-JSONL-plus-PNGs debug sink for either backend below —
+// never a credential's own concern, so it is built once, up front.
+const debugDir = arg("debug") || process.env.ONECLAW_BRIDGE_DEBUG;
+const onStep = debugDir ? makeDebugStep(debugDir) : undefined;
 
 const version = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
@@ -86,6 +93,7 @@ if (vaultPath) {
     backend: local,
     host: "127.0.0.1",
     ...(process.env.ONECLAW_BRIDGE_PORT ? { port: Number(process.env.ONECLAW_BRIDGE_PORT) } : {}),
+    ...(onStep ? { onStep } : {}),
   });
   console.log(localBridge.url);
   console.error(`browser bridge ${version} listening on ${localBridge.host}:${localBridge.port}`);
@@ -138,6 +146,7 @@ const bridge = await startBridge({
   backend,
   host: "127.0.0.1",
   ...(process.env.ONECLAW_BRIDGE_PORT ? { port: Number(process.env.ONECLAW_BRIDGE_PORT) } : {}),
+  ...(onStep ? { onStep } : {}),
 });
 
 // The URL carries the session token, so it is the one secret this process
