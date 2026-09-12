@@ -17,6 +17,7 @@ node packages/browser-bridge/examples/register-login-act.mjs
 | `full-flow-capture.mjs` | Adds the two remaining directions: **capture** (while logged in, the bridge generates an API key on the site, reads it, and stores it in the vault — a fill in reverse) and **execute** (the agent runs an intent that uses the captured key in a real request). The key is in none of the agent's output. |
 | `agent.mjs` | The minimal CDP client the examples use to stand in for a framework. Not a demo on its own. |
 | `intent-executor.mjs` | A local stand-in for the 1Claw Execution Intents API (`POST /v1/agents/{id}/execute`): a binding says which vaulted secret and how to inject it; the agent passes params, never the secret. Used by `full-flow-capture.mjs`. Not the production path — the hosted Intents API runs inside a TEE with guardrails and audit — but it demonstrates the same property. |
+| `browser-use/` | The same login-fill proof as `register-login-act.mjs`, but driven by browser-use (a Python agentic browser framework, not Puppeteer/Playwright-based) instead of a JS client. See `browser-use/README.md` — it's a two-process example (Node bridge + Python agent) with its own setup. |
 
 `register-login-act.mjs` prints each step:
 
@@ -55,6 +56,17 @@ that a conforming client no longer trips over it.
 The examples still use a small hand-rolled client (`agent.mjs`) because it shows
 the protocol surface plainly — which methods an agent may call is the whole
 point of the gate, and a framework hides that behind its own API.
+
+**browser-use connects too, from a different ecosystem entirely.** Its own CDP
+client (`cdp_use` — current browser-use releases are not Playwright-based, an
+earlier claim in the main README that this section now corrects) skips its
+usual `/json/version` HTTP discovery whenever the `cdp_url` you give it already
+starts with `ws`, so pointing it straight at the bridge's URL works with no
+special-casing on either side — the same shape as `browserWSEndpoint` and
+`connectOverCDP`. It also calls `Browser.grantPermissions` on connect, which
+Puppeteer and Playwright don't; the gate refuses it (not on the allowlist) and
+browser-use handles that refusal without breaking the session. See
+`browser-use/` for the same login-fill proof, driven end to end by browser-use.
 
 A framework may also integrate the way `agent.mjs` does, speaking gated CDP
 directly with the allowlisted methods (`Target.createTarget`,

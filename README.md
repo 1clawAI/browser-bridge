@@ -87,9 +87,16 @@ to you.
   The agent asks *which* binding; it cannot choose the page, cannot read the
   field, and cannot collect the value.
 
-browser-use is Playwright-based, so it connects to the bridge unchanged. There
-is a test that drives stock `puppeteer-core` and `playwright-core` through the
-gate against a real Chromium on every commit.
+**browser-use connects too — verified, not assumed.** Current browser-use
+releases have their own CDP client rather than sitting on Playwright, so this
+took an actual test rather than inheriting Playwright's proof: point
+`BrowserProfile(cdp_url=...)` at the URL the bridge prints, and browser-use's
+`connect()` skips its usual HTTP `/json/version` discovery whenever the URL
+already starts with `ws`, going straight to the WebSocket the same way
+`browserWSEndpoint`/`connectOverCDP` do. `examples/browser-use/` drives the
+same login-fill proof as `register-login-act.mjs`, but with browser-use as the
+agent. There is a test that drives stock `puppeteer-core` and
+`playwright-core` through the gate against a real Chromium on every commit.
 
 ## How fast
 
