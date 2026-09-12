@@ -4,6 +4,11 @@ dist/
 coverage/
 .DS_Store
 
+# examples/browser-use/ is the one Python example in an otherwise all-Node repo.
+.venv/
+__pycache__/
+*.pyc
+
 # Local bridge configuration and the bb_ credential it holds.
 config.toml
 .env
